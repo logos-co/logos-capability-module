@@ -43,11 +43,44 @@
             "-DLOGOS_CPP_SDK_ROOT=${logosSdk}"
             "-DLOGOS_LIBLOGOS_ROOT=${logosLiblogos}"
             "-DLOGOS_CAPABILITY_MODULE_USE_VENDOR=OFF"
+            "-DCMAKE_BUILD_TYPE=Release"
           ];
           
           # Set environment variables for CMake to find the dependencies
           LOGOS_CPP_SDK_ROOT = "${logosSdk}";
           LOGOS_LIBLOGOS_ROOT = "${logosLiblogos}";
+          
+          # Post-install phase to ensure correct file extensions and cross-platform compatibility
+          postInstall = ''
+            # Find the plugin file and create appropriate symlinks
+            PLUGIN_DIR="$out/lib/logos/modules"
+            if [ -d "$PLUGIN_DIR" ]; then
+              # Find the actual plugin file (could be .so, .dylib, or .dll)
+              for plugin_file in "$PLUGIN_DIR"/*; do
+                if [ -f "$plugin_file" ]; then
+                  plugin_name=$(basename "$plugin_file")
+                  plugin_base=$(echo "$plugin_name" | sed 's/\.[^.]*$//')
+                  
+                  # Create symlinks for cross-platform compatibility
+                  case "$plugin_name" in
+                    *.so)
+                      # Linux .so file - create .dylib symlink for macOS compatibility
+                      ln -sf "$plugin_name" "$PLUGIN_DIR/''${plugin_base}.dylib"
+                      ;;
+                    *.dylib)
+                      # macOS .dylib file - create .so symlink for Linux compatibility  
+                      ln -sf "$plugin_name" "$PLUGIN_DIR/''${plugin_base}.so"
+                      ;;
+                    *.dll)
+                      # Windows .dll file - create both .so and .dylib symlinks
+                      ln -sf "$plugin_name" "$PLUGIN_DIR/''${plugin_base}.so"
+                      ln -sf "$plugin_name" "$PLUGIN_DIR/''${plugin_base}.dylib"
+                      ;;
+                  esac
+                fi
+              done
+            fi
+          '';
           
           meta = with pkgs.lib; {
             description = "Logos Capability Module - Coordinates permissions between modules";

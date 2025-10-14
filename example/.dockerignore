@@ -1,0 +1,28 @@
+# Ignore build artifacts
+build/
+result/
+
+# Ignore development files
+*.log
+*.tmp
+.DS_Store
+.vscode/
+.idea/
+
+# Ignore git files
+.git/
+.gitignore
+
+# Ignore nix store references
+/nix/store/
+
+# Keep only source files and configuration
+!*.cpp
+!*.c
+!*.h
+!CMakeLists.txt
+!flake.nix
+!flake.lock
+!metadata.json
+!README.md
+!compile-qt6.sh

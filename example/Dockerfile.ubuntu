@@ -1,0 +1,78 @@
+# Multi-stage build: Build with CMake on Ubuntu, then create minimal runtime
+FROM ubuntu:22.04 AS builder
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        pkg-config \
+        qt6-base-dev \
+        qt6-remoteobjects-dev \
+        git \
+        ca-certificates \
+        && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Build with CMake
+RUN mkdir -p build && \
+    cd build && \
+    cmake -GNinja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr/local \
+          .. && \
+    ninja
+
+# Copy built binary to staging directory
+RUN mkdir -p /staging/usr/local/bin && \
+    cp build/plugin_loader /staging/usr/local/bin/ && \
+    mkdir -p /staging/usr/local/lib/logos/modules && \
+    cp -r modules/* /staging/usr/local/lib/logos/modules/ 2>/dev/null || true
+
+# Runtime stage
+FROM ubuntu:22.04 AS runtime
+
+# Install minimal runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libc6 \
+        libstdc++6 \
+        libgcc-s1 \
+        libqt6core6 \
+        libqt6network6 \
+        libqt6remoteobjects6 \
+        ca-certificates \
+        && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN useradd -m -s /bin/bash logos
+
+# Copy the built application from the builder stage
+COPY --from=builder /staging/usr/local/bin/plugin_loader /usr/local/bin/plugin_loader
+COPY --from=builder /staging/usr/local/lib/logos/modules/ /usr/local/lib/logos/modules/
+
+# Create a .so file by copying the existing .dylib (for testing purposes)
+RUN cp /usr/local/lib/logos/modules/capability_module_plugin.dylib /usr/local/lib/logos/modules/capability_module_plugin.so
+
+# Set permissions
+RUN chmod +x /usr/local/bin/plugin_loader && \
+    chown -R logos:logos /usr/local/lib/logos/
+
+# Switch to non-root user
+USER logos
+WORKDIR /home/logos
+
+# Set environment variables
+ENV PATH="/usr/local/bin:${PATH}"
+ENV QT_PLUGIN_PATH="/usr/local/lib/logos/modules"
+
+# Default command
+CMD ["plugin_loader", "--help"]

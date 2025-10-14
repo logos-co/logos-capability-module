@@ -18,11 +18,10 @@ target_link_libraries(plugin_loader PRIVATE
 
 # Ensure the executable can locate Qt frameworks used by plugins at runtime
 if(APPLE)
-    # Embed build-time rpaths to Qt lib dirs so dyld finds frameworks for plugins
+    # Use origin-based rpaths; Nix wrapper will set DYLD paths to the store frameworks
     set_target_properties(plugin_loader PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
-        BUILD_RPATH "$<TARGET_FILE_DIR:Qt${QT_VERSION_MAJOR}::Core>;$<TARGET_FILE_DIR:Qt${QT_VERSION_MAJOR}::RemoteObjects>"
-        INSTALL_RPATH "$<TARGET_FILE_DIR:Qt${QT_VERSION_MAJOR}::Core>;$<TARGET_FILE_DIR:Qt${QT_VERSION_MAJOR}::RemoteObjects>"
+        INSTALL_RPATH "@loader_path"
     )
 else()
     set_target_properties(plugin_loader PROPERTIES

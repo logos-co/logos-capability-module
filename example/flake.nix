@@ -25,6 +25,7 @@
             pkgs.ninja
             pkgs.pkg-config
             pkgs.qt6.wrapQtAppsNoGuiHook
+            pkgs.patchelf
           ];
 
           buildInputs = [
@@ -40,6 +41,22 @@
           installPhase = ''
             mkdir -p "$out/bin"
             cp -v plugin_loader "$out/bin/"
+            # Ship example plugins alongside for easy loading
+            if [ -d "${src}/modules" ]; then
+              mkdir -p "$out/modules"
+              cp -av "${src}/modules/." "$out/modules/"
+            fi
+          '';
+
+          # Make the binary portable by patching library paths
+          postInstall = ''
+            # Patch the binary to use system libraries instead of nix store paths
+            patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$out/bin/plugin_loader" || \
+            patchelf --set-interpreter /lib/ld-linux-aarch64.so.1 "$out/bin/plugin_loader" || true
+            
+            # Remove nix store rpath and set to use system libraries
+            patchelf --remove-rpath "$out/bin/plugin_loader"
+            patchelf --set-rpath /lib:/lib64:/usr/lib:/usr/lib64 "$out/bin/plugin_loader"
           '';
 
           meta = with pkgs.lib; {
