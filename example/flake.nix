@@ -49,6 +49,25 @@
         };
       });
 
+      apps = forAllSystems ({ pkgs }: {
+        # Runs plugin_loader with the example capability module from this repo
+        default = {
+          type = "app";
+          program = let
+            run = pkgs.writeShellScriptBin "plugin_loader-example" ''
+              exec ${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/plugin_loader \
+                --path ${./modules/capability_module_plugin.dylib} "$@"
+            '';
+          in "${run}/bin/plugin_loader-example";
+        };
+
+        # Raw plugin_loader so you can pass a custom --path
+        plugin_loader = {
+          type = "app";
+          program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/plugin_loader";
+        };
+      });
+
       devShells = forAllSystems ({ pkgs }: {
         default = pkgs.mkShell {
           nativeBuildInputs = [
