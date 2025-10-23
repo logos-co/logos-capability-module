@@ -34,6 +34,7 @@
           buildInputs = [ 
             pkgs.qt6.qtbase 
             pkgs.qt6.qtremoteobjects 
+            pkgs.zstd
             logosSdk
             logosLiblogos
           ];
@@ -45,6 +46,19 @@
             "-DLOGOS_CAPABILITY_MODULE_USE_VENDOR=OFF"
           ];
           
+          installPhase = ''
+            mkdir -p $out/lib
+            # Find and copy the built library file from the modules directory
+            if [ -f modules/capability_module_plugin.dylib ]; then
+              cp modules/capability_module_plugin.dylib $out/lib/
+            elif [ -f modules/capability_module_plugin.so ]; then
+              cp modules/capability_module_plugin.so $out/lib/
+            else
+              echo "Error: No library file found"
+              exit 1
+            fi
+          '';
+
           # Set environment variables for CMake to find the dependencies
           LOGOS_CPP_SDK_ROOT = "${logosSdk}";
           LOGOS_LIBLOGOS_ROOT = "${logosLiblogos}";
@@ -66,6 +80,7 @@
           buildInputs = [
             pkgs.qt6.qtbase
             pkgs.qt6.qtremoteobjects
+            pkgs.zstd
             logosSdk
             logosLiblogos
           ];

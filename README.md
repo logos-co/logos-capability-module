@@ -9,6 +9,13 @@ Coordinates permissions and capabilities between Logos modules.
 nix build
 ```
 
+This will create a `result` symlink with the following structure:
+```
+result/
+└── lib/
+    └── capability_module_plugin.dylib  (or .so on Linux)
+```
+
 ### Enter development shell
 ```bash
 nix develop
