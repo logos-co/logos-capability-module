@@ -52,7 +52,7 @@ set(_cpp_sdk_found FALSE)
 if(EXISTS "${LOGOS_CPP_SDK_ROOT}/cpp/logos_api.h")
     set(_cpp_sdk_found TRUE)
     set(_cpp_sdk_is_source TRUE)
-elseif(EXISTS "${LOGOS_CPP_SDK_ROOT}/include/logos_api.h")
+elseif(EXISTS "${LOGOS_CPP_SDK_ROOT}/include/cpp/logos_api.h")
     set(_cpp_sdk_found TRUE)
     set(_cpp_sdk_is_source FALSE)
 endif()
@@ -191,7 +191,11 @@ if(_cpp_sdk_is_source)
         ${LOGOS_CPP_SDK_ROOT}/cpp/generated
     )
 else()
-    target_include_directories(capability_module_plugin PRIVATE ${LOGOS_CPP_SDK_ROOT}/include)
+    target_include_directories(capability_module_plugin PRIVATE 
+        ${LOGOS_CPP_SDK_ROOT}/include
+        ${LOGOS_CPP_SDK_ROOT}/include/cpp
+        ${LOGOS_CPP_SDK_ROOT}/include/core
+    )
 endif()
 
 # Set common properties for both platforms

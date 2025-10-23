@@ -2,7 +2,8 @@
   description = "Logos Capability Module - Coordinates permissions between modules";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Follow the same nixpkgs as logos-liblogos to ensure compatibility
+    nixpkgs.follows = "logos-liblogos/nixpkgs";
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-liblogos.url = "github:logos-co/logos-liblogos";
   };
@@ -35,8 +36,6 @@
             pkgs.qt6.qtbase 
             pkgs.qt6.qtremoteobjects 
             pkgs.zstd
-            logosSdk
-            logosLiblogos
           ];
           
           cmakeFlags = [ 
@@ -81,8 +80,6 @@
             pkgs.qt6.qtbase
             pkgs.qt6.qtremoteobjects
             pkgs.zstd
-            logosSdk
-            logosLiblogos
           ];
           
           shellHook = ''
