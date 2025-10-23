@@ -18,56 +18,23 @@
       });
     in
     {
-      packages = forAllSystems ({ pkgs, logosSdk, logosLiblogos }: {
-        default = pkgs.stdenv.mkDerivation rec {
-          pname = "logos-capability-module";
-          version = "1.0.0";
-          
+      packages = forAllSystems ({ pkgs, logosSdk, logosLiblogos }: 
+        let
+          # Common configuration
+          common = import ./nix/default.nix { inherit pkgs logosSdk logosLiblogos; };
           src = ./.;
           
-          nativeBuildInputs = [ 
-            pkgs.cmake 
-            pkgs.ninja 
-            pkgs.pkg-config
-            pkgs.qt6.wrapQtAppsNoGuiHook
-          ];
+          # Library package
+          lib = import ./nix/lib.nix { inherit pkgs common src; };
+        in
+        {
+          # Individual output
+          logos-capability-module-lib = lib;
           
-          buildInputs = [ 
-            pkgs.qt6.qtbase 
-            pkgs.qt6.qtremoteobjects 
-            pkgs.zstd
-          ];
-          
-          cmakeFlags = [ 
-            "-GNinja"
-            "-DLOGOS_CPP_SDK_ROOT=${logosSdk}"
-            "-DLOGOS_LIBLOGOS_ROOT=${logosLiblogos}"
-            "-DLOGOS_CAPABILITY_MODULE_USE_VENDOR=OFF"
-          ];
-          
-          installPhase = ''
-            mkdir -p $out/lib
-            # Find and copy the built library file from the modules directory
-            if [ -f modules/capability_module_plugin.dylib ]; then
-              cp modules/capability_module_plugin.dylib $out/lib/
-            elif [ -f modules/capability_module_plugin.so ]; then
-              cp modules/capability_module_plugin.so $out/lib/
-            else
-              echo "Error: No library file found"
-              exit 1
-            fi
-          '';
-
-          # Set environment variables for CMake to find the dependencies
-          LOGOS_CPP_SDK_ROOT = "${logosSdk}";
-          LOGOS_LIBLOGOS_ROOT = "${logosLiblogos}";
-          
-          meta = with pkgs.lib; {
-            description = "Logos Capability Module - Coordinates permissions between modules";
-            platforms = platforms.unix;
-          };
-        };
-      });
+          # Default package
+          default = lib;
+        }
+      );
 
       devShells = forAllSystems ({ pkgs, logosSdk, logosLiblogos }: {
         default = pkgs.mkShell {
