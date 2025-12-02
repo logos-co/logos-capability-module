@@ -85,8 +85,16 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core RemoteObjects)
 set(METADATA_JSON "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json")
 set(PLUGINS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/modules")
 
-# Try to find the generator binary
-if(_cpp_sdk_is_source)
+# For iOS cross-compilation, skip the generator (it's a host tool)
+# The generated files should exist from a prior macOS build or be pre-generated
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    message(STATUS "iOS build: Skipping cpp_generator (host tool not available during cross-compilation)")
+    # Create a dummy target so dependencies still work
+    add_custom_target(run_cpp_generator_capability
+        COMMAND ${CMAKE_COMMAND} -E echo "Skipping code generator for iOS build"
+        COMMENT "Skipping logos-cpp-generator for iOS cross-compilation"
+    )
+elseif(_cpp_sdk_is_source)
     # Source layout: build the generator
     set(CPP_GENERATOR_BUILD_DIR "${LOGOS_DEPS_ROOT}/build/cpp-generator")
     set(CPP_GENERATOR "${CPP_GENERATOR_BUILD_DIR}/bin/logos-cpp-generator")
@@ -152,7 +160,14 @@ if(_cpp_sdk_is_source)
 endif()
 
 # Create the plugin library
-add_library(capability_module_plugin SHARED ${PLUGIN_SOURCES})
+# Build as static for iOS (dynamic libraries not supported in iOS apps), shared otherwise
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_library(capability_module_plugin STATIC ${PLUGIN_SOURCES})
+    # Enable Qt static plugin registration so Q_IMPORT_PLUGIN works
+    target_compile_definitions(capability_module_plugin PRIVATE QT_STATICPLUGIN)
+else()
+    add_library(capability_module_plugin SHARED ${PLUGIN_SOURCES})
+endif()
 
 # Set output name without lib prefix
 set_target_properties(capability_module_plugin PROPERTIES
@@ -201,33 +216,44 @@ endif()
 # Set common properties for both platforms
 set_target_properties(capability_module_plugin PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/modules"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/modules"  # For static libraries
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/modules"  # For Windows .dll
     BUILD_WITH_INSTALL_RPATH TRUE
     SKIP_BUILD_RPATH FALSE)
 
-if(APPLE)
-    # macOS specific settings
-    set_target_properties(capability_module_plugin PROPERTIES
-        INSTALL_RPATH "@loader_path"
-        INSTALL_NAME_DIR "@rpath"
-        BUILD_WITH_INSTALL_NAME_DIR TRUE)
-    
-    add_custom_command(TARGET capability_module_plugin POST_BUILD
-        COMMAND install_name_tool -id "@rpath/capability_module_plugin.dylib" $<TARGET_FILE:capability_module_plugin>
-        COMMENT "Updating library paths for macOS"
-    )
-else()
-    # Linux specific settings
-    set_target_properties(capability_module_plugin PROPERTIES
-        INSTALL_RPATH "$ORIGIN"
-        INSTALL_RPATH_USE_LINK_PATH FALSE)
+# Skip RPATH settings for iOS (not applicable for static libraries)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    if(APPLE)
+        # macOS specific settings
+        set_target_properties(capability_module_plugin PROPERTIES
+            INSTALL_RPATH "@loader_path"
+            INSTALL_NAME_DIR "@rpath"
+            BUILD_WITH_INSTALL_NAME_DIR TRUE)
+        
+        add_custom_command(TARGET capability_module_plugin POST_BUILD
+            COMMAND install_name_tool -id "@rpath/capability_module_plugin.dylib" $<TARGET_FILE:capability_module_plugin>
+            COMMENT "Updating library paths for macOS"
+        )
+    else()
+        # Linux specific settings
+        set_target_properties(capability_module_plugin PROPERTIES
+            INSTALL_RPATH "$ORIGIN"
+            INSTALL_RPATH_USE_LINK_PATH FALSE)
+    endif()
 endif()
 
-install(TARGETS capability_module_plugin
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
-    RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
-)
+# Install rules - use lib directory for iOS static libraries
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    install(TARGETS capability_module_plugin
+        ARCHIVE DESTINATION lib
+    )
+else()
+    install(TARGETS capability_module_plugin
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
+        RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/logos/modules
+    )
+endif()
 
 install(FILES ${METADATA_JSON}
     DESTINATION ${CMAKE_INSTALL_DATADIR}/logos-capability-module
