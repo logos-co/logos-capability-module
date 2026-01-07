@@ -30,7 +30,8 @@
         {
           # Individual output
           logos-capability-module-lib = lib;
-          
+          lib = lib;
+
           # Default package
           default = lib;
         }
