@@ -5,23 +5,23 @@
     logos-nix.url = "github:logos-co/logos-nix";
     nixpkgs.follows = "logos-nix/nixpkgs";
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
-    logos-liblogos.url = "github:logos-co/logos-liblogos";
+    logos-module.url = "github:logos-co/logos-module";
   };
 
-  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-liblogos }:
+  outputs = { self, nixpkgs, logos-nix, logos-cpp-sdk, logos-module }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f {
         pkgs = import nixpkgs { inherit system; };
         logosSdk = logos-cpp-sdk.packages.${system}.default;
-        logosLiblogos = logos-liblogos.packages.${system}.default;
+        logosModule = logos-module.packages.${system}.default;
       });
     in
     {
-      packages = forAllSystems ({ pkgs, logosSdk, logosLiblogos }: 
+      packages = forAllSystems ({ pkgs, logosSdk, logosModule }:
         let
           # Common configuration
-          common = import ./nix/default.nix { inherit pkgs logosSdk logosLiblogos; };
+          common = import ./nix/default.nix { inherit pkgs logosSdk logosModule; };
           src = ./.;
           
           # Library package
@@ -37,7 +37,7 @@
         }
       );
 
-      devShells = forAllSystems ({ pkgs, logosSdk, logosLiblogos }: {
+      devShells = forAllSystems ({ pkgs, logosSdk, logosModule }: {
         default = pkgs.mkShell {
           nativeBuildInputs = [
             pkgs.cmake
@@ -52,10 +52,10 @@
           
           shellHook = ''
             export LOGOS_CPP_SDK_ROOT="${logosSdk}"
-            export LOGOS_LIBLOGOS_ROOT="${logosLiblogos}"
+            export LOGOS_MODULE_ROOT="${logosModule}"
             echo "Logos Capability Module development environment"
             echo "LOGOS_CPP_SDK_ROOT: $LOGOS_CPP_SDK_ROOT"
-            echo "LOGOS_LIBLOGOS_ROOT: $LOGOS_LIBLOGOS_ROOT"
+            echo "LOGOS_MODULE_ROOT: $LOGOS_MODULE_ROOT"
           '';
         };
       });

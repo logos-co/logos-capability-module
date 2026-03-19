@@ -8,18 +8,18 @@ set(CMAKE_AUTOMOC ON)
 option(LOGOS_CAPABILITY_MODULE_USE_VENDOR "Force use of vendored Logos dependencies" OFF)
 
 # Allow override from environment or command line
-if(NOT DEFINED LOGOS_LIBLOGOS_ROOT)
-    set(_parent_liblogos "${CMAKE_SOURCE_DIR}/../logos-liblogos")
+if(NOT DEFINED LOGOS_MODULE_ROOT)
+    set(_parent_module "${CMAKE_SOURCE_DIR}/../logos-module")
     set(_use_vendor ${LOGOS_CAPABILITY_MODULE_USE_VENDOR})
     if(NOT _use_vendor)
-        if(NOT EXISTS "${_parent_liblogos}/interface.h")
+        if(NOT EXISTS "${_parent_module}/src/interface.h")
             set(_use_vendor ON)
         endif()
     endif()
     if(_use_vendor)
-        set(LOGOS_LIBLOGOS_ROOT "${CMAKE_SOURCE_DIR}/vendor/logos-liblogos")
+        set(LOGOS_MODULE_ROOT "${CMAKE_SOURCE_DIR}/vendor/logos-module")
     else()
-        set(LOGOS_LIBLOGOS_ROOT "${_parent_liblogos}")
+        set(LOGOS_MODULE_ROOT "${_parent_module}")
     endif()
 endif()
 
@@ -39,13 +39,13 @@ if(NOT DEFINED LOGOS_CPP_SDK_ROOT)
 endif()
 
 # Check if dependencies are available (support both source and installed layouts)
-set(_liblogos_found FALSE)
-if(EXISTS "${LOGOS_LIBLOGOS_ROOT}/interface.h")
-    set(_liblogos_found TRUE)
-    set(_liblogos_is_source TRUE)
-elseif(EXISTS "${LOGOS_LIBLOGOS_ROOT}/include/interface.h")
-    set(_liblogos_found TRUE)
-    set(_liblogos_is_source FALSE)
+set(_logos_module_found FALSE)
+if(EXISTS "${LOGOS_MODULE_ROOT}/src/interface.h")
+    set(_logos_module_found TRUE)
+    set(_logos_module_is_source TRUE)
+elseif(EXISTS "${LOGOS_MODULE_ROOT}/include/module_lib/interface.h")
+    set(_logos_module_found TRUE)
+    set(_logos_module_is_source FALSE)
 endif()
 
 set(_cpp_sdk_found FALSE)
@@ -57,9 +57,9 @@ elseif(EXISTS "${LOGOS_CPP_SDK_ROOT}/include/cpp/logos_api.h")
     set(_cpp_sdk_is_source FALSE)
 endif()
 
-if(NOT _liblogos_found)
-    message(FATAL_ERROR "logos-liblogos not found at ${LOGOS_LIBLOGOS_ROOT}. "
-                        "Set LOGOS_LIBLOGOS_ROOT or run git submodule update --init --recursive.")
+if(NOT _logos_module_found)
+    message(FATAL_ERROR "logos-module not found at ${LOGOS_MODULE_ROOT}. "
+                        "Set LOGOS_MODULE_ROOT or run git submodule update --init --recursive.")
 endif()
 
 if(NOT _cpp_sdk_found)
@@ -134,11 +134,11 @@ set(PLUGIN_SOURCES
     capability_module_interface.h
 )
 
-# Add liblogos interface header
-if(_liblogos_is_source)
-    list(APPEND PLUGIN_SOURCES ${LOGOS_LIBLOGOS_ROOT}/interface.h)
+# Add logos-module interface header
+if(_logos_module_is_source)
+    list(APPEND PLUGIN_SOURCES ${LOGOS_MODULE_ROOT}/src/interface.h)
 else()
-    list(APPEND PLUGIN_SOURCES ${LOGOS_LIBLOGOS_ROOT}/include/interface.h)
+    list(APPEND PLUGIN_SOURCES ${LOGOS_MODULE_ROOT}/include/module_lib/interface.h)
 endif()
 
 # Add SDK sources (only if source layout, installed layout uses the library)
@@ -194,10 +194,10 @@ target_include_directories(capability_module_plugin PRIVATE
 )
 
 # Add include directories based on layout type
-if(_liblogos_is_source)
-    target_include_directories(capability_module_plugin PRIVATE ${LOGOS_LIBLOGOS_ROOT})
+if(_logos_module_is_source)
+    target_include_directories(capability_module_plugin PRIVATE ${LOGOS_MODULE_ROOT}/src)
 else()
-    target_include_directories(capability_module_plugin PRIVATE ${LOGOS_LIBLOGOS_ROOT}/include)
+    target_include_directories(capability_module_plugin PRIVATE ${LOGOS_MODULE_ROOT}/include/module_lib)
 endif()
 
 if(_cpp_sdk_is_source)
