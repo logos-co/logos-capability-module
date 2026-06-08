@@ -1,3 +1,8 @@
 build/
 result
 generated_code/
+
+# Doc-test output: generated artifacts are disposable, but keep the rendered
+# .md. (report.html is published by CI to GitHub Pages, not committed.)
+doctests/outputs/*
+!doctests/outputs/*.md
