@@ -73,6 +73,14 @@ QString CapabilityModuleImpl::requestModule(const QString& fromModuleName, const
     // only the listed callers may obtain a token. A target with no registered
     // restriction is unrestricted (back-compat). Fail closed for a restricted
     // target — the denied caller never gets a token, so it can never call it.
+    //
+    // TODO(access-policy): this is currently fail-OPEN — when m_restrictions is
+    // empty (no policy pushed, e.g. running against a core that doesn't push
+    // restrictions) nothing is enforced and every caller is allowed. This is
+    // intentional for back-compat during rollout, but the end state should be
+    // deny-by-default: once every deployment ships a policy, an empty/unknown
+    // policy should block inter-module calls rather than permit them. Revisit
+    // and flip the default once the policy is guaranteed to be present.
     if (auto it = m_restrictions.constFind(moduleName); it != m_restrictions.constEnd()) {
         if (!it->contains(fromModuleName)) {
             qWarning() << "CapabilityModuleImpl::requestModule: access policy denies"
