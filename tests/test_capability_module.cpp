@@ -40,6 +40,17 @@ void seedModule(const QString& name) {
     TokenManager::instance().saveToken(name, "seed-token-" + name);
 }
 
+// The trusted core/capability_module auth token. registerRestriction requires
+// it; only core holds it in production. In tests it is whatever seedModule
+// stored for "capability_module".
+const QString kTrustedToken = QStringLiteral("seed-token-capability_module");
+
+// Seed the trusted channel so registerRestriction calls authenticate. Call in
+// any test that registers a restriction.
+void seedTrustedChannel() {
+    seedModule("capability_module");
+}
+
 }
 
 // ── Success path: both caller and target are known modules ──────────────────
@@ -158,4 +169,139 @@ LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+}
+
+// ── Access-policy enforcement (registerRestriction + requestModule) ─────────
+//
+// Core parses the access policy and calls registerRestriction(target,
+// allowedCallers) for each restricted target. requestModule then refuses to
+// mint a token when a restricted target's allowed-caller set does not include
+// the requester — the denied caller never gets credentials, so it can never
+// call the target. A target with NO registered restriction stays unrestricted.
+
+LOGOS_TEST(registerRestriction_rejects_empty_target) {
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    LOGOS_ASSERT_FALSE(impl.registerRestriction(kTrustedToken, "", QStringList{"caller"}));
+}
+
+LOGOS_TEST(registerRestriction_rejects_untrusted_caller_token) {
+    // A loaded module can reach this method (isAuthorized accepts any issued
+    // token), so the explicit trusted-token gate is the real defense: a peer
+    // presenting its own token must NOT be able to register a restriction.
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    seedModule("malicious_module");
+    seedModule("package_manager");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    // malicious_module tries to grant itself access using its OWN token.
+    const bool ok = impl.registerRestriction(
+        "seed-token-malicious_module", "package_manager",
+        QStringList{"malicious_module"});
+    LOGOS_ASSERT_FALSE(ok);
+
+    // And an empty token is rejected too.
+    LOGOS_ASSERT_FALSE(impl.registerRestriction(
+        "", "package_manager", QStringList{"malicious_module"}));
+}
+
+LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    seedModule("package_manager_ui");
+    seedModule("package_manager");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    LOGOS_ASSERT_TRUE(impl.registerRestriction(
+        kTrustedToken, "package_manager", QStringList{"package_manager_ui"}));
+
+    QString token = impl.requestModule("package_manager_ui", "package_manager");
+
+    LOGOS_ASSERT_FALSE(token.isEmpty());
+    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+}
+
+LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    seedModule("some_other_module");
+    seedModule("package_manager");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    impl.registerRestriction(kTrustedToken, "package_manager", QStringList{"package_manager_ui"});
+
+    // some_other_module is a known, loaded module (passes the identity gate)
+    // but is not in package_manager's allowed-caller set — must be denied.
+    QString token = impl.requestModule("some_other_module", "package_manager");
+
+    LOGOS_ASSERT_TRUE(token.isEmpty());
+}
+
+LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    seedModule("some_module");
+    seedModule("restricted_target");
+    seedModule("open_target");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    // Restrict only restricted_target; open_target has no restriction.
+    impl.registerRestriction(kTrustedToken, "restricted_target", QStringList{"allowed_caller"});
+
+    QString token = impl.requestModule("some_module", "open_target");
+
+    LOGOS_ASSERT_FALSE(token.isEmpty());
+    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+}
+
+LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
+    // Back-compat: with no policy pushed, every known caller/target pair works.
+    LogosMockSetup mock;
+    seedModule("requester_module");
+    seedModule("target_module");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    QString token = impl.requestModule("requester_module", "target_module");
+
+    LOGOS_ASSERT_FALSE(token.isEmpty());
+}
+
+LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
+    LogosMockSetup mock;
+    seedTrustedChannel();
+    seedModule("old_caller");
+    seedModule("new_caller");
+    seedModule("target_module");
+
+    CapabilityModuleImpl impl;
+    LogosAPI api("capability_module");
+    impl.init(&api);
+
+    impl.registerRestriction(kTrustedToken, "target_module", QStringList{"old_caller"});
+    // Re-register (as core does each boot) with a different allowed set.
+    impl.registerRestriction(kTrustedToken, "target_module", QStringList{"new_caller"});
+
+    // old_caller is no longer allowed; new_caller is.
+    LOGOS_ASSERT_TRUE(impl.requestModule("old_caller", "target_module").isEmpty());
+    LOGOS_ASSERT_FALSE(impl.requestModule("new_caller", "target_module").isEmpty());
 }
