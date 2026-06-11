@@ -1,4 +1,8 @@
-// Unit tests for CapabilityModuleImpl.
+// Unit tests for CapabilityModulePlugin.
+//
+// capability_module is a plain legacy Qt plugin: the generic ModuleProxy wraps
+// it and dispatches Q_INVOKABLE methods by name, so the tests drive the plugin
+// methods directly (initLogos + requestModule / registerRestriction).
 //
 // requestModule() mints a UUID auth token, asks the target module to record it
 // via informModuleToken_module(), and returns the token to the caller.
@@ -26,8 +30,9 @@
 #include <QSet>
 #include <QString>
 
-#include "capability_module_impl.h"
+#include "capability_module_plugin.h"
 #include "logos_api.h"
+#include "token_manager.h"
 
 namespace {
 
@@ -60,11 +65,11 @@ LOGOS_TEST(requestModule_returns_uuid_format_token) {
     seedModule("requester_module");
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -75,13 +80,13 @@ LOGOS_TEST(requestModule_mints_unique_token_per_call) {
     seedModule("requester");
     seedModule("target");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
     QSet<QString> tokens;
     for (int i = 0; i < 10; ++i) {
-        tokens.insert(impl.requestModule("requester", "target"));
+        tokens.insert(plugin.requestModule("requester", "target"));
     }
 
     LOGOS_ASSERT_EQ(tokens.size(), 10);
@@ -94,11 +99,11 @@ LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
     seedModule("requester_module");
     TokenManager::instance().saveToken("target_module", "pre-seeded-token");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
 }
@@ -107,9 +112,9 @@ LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
 
 LOGOS_TEST(requestModule_returns_empty_when_not_initialized) {
     LogosMockSetup mock;
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
 
-    QString token = impl.requestModule("requester", "target");
+    QString token = plugin.requestModule("requester", "target");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -118,11 +123,11 @@ LOGOS_TEST(requestModule_rejects_empty_fromModuleName) {
     LogosMockSetup mock;
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("", "target_module");
+    QString token = plugin.requestModule("", "target_module");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -132,12 +137,12 @@ LOGOS_TEST(requestModule_rejects_unknown_fromModuleName) {
     // Only the target is known; the requesting identity was never loaded.
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
     // Spoofing a non-loaded identity must not mint a token.
-    QString token = impl.requestModule("spoofed_module", "target_module");
+    QString token = plugin.requestModule("spoofed_module", "target_module");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -147,11 +152,11 @@ LOGOS_TEST(requestModule_rejects_unknown_target) {
     // Only the caller is known; the target was never loaded.
     seedModule("requester_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("requester_module", "missing_target");
+    QString token = plugin.requestModule("requester_module", "missing_target");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -161,11 +166,11 @@ LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
     seedModule("requester_module");
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -182,11 +187,11 @@ LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
 LOGOS_TEST(registerRestriction_rejects_empty_target) {
     LogosMockSetup mock;
     seedTrustedChannel();
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    LOGOS_ASSERT_FALSE(impl.registerRestriction(kTrustedToken, "", QStringList{"caller"}));
+    LOGOS_ASSERT_FALSE(plugin.registerRestriction(kTrustedToken, "", QStringList{"caller"}));
 }
 
 LOGOS_TEST(registerRestriction_rejects_untrusted_caller_token) {
@@ -198,18 +203,18 @@ LOGOS_TEST(registerRestriction_rejects_untrusted_caller_token) {
     seedModule("malicious_module");
     seedModule("package_manager");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
     // malicious_module tries to grant itself access using its OWN token.
-    const bool ok = impl.registerRestriction(
+    const bool ok = plugin.registerRestriction(
         "seed-token-malicious_module", "package_manager",
         QStringList{"malicious_module"});
     LOGOS_ASSERT_FALSE(ok);
 
     // And an empty token is rejected too.
-    LOGOS_ASSERT_FALSE(impl.registerRestriction(
+    LOGOS_ASSERT_FALSE(plugin.registerRestriction(
         "", "package_manager", QStringList{"malicious_module"}));
 }
 
@@ -219,14 +224,14 @@ LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
     seedModule("package_manager_ui");
     seedModule("package_manager");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    LOGOS_ASSERT_TRUE(impl.registerRestriction(
+    LOGOS_ASSERT_TRUE(plugin.registerRestriction(
         kTrustedToken, "package_manager", QStringList{"package_manager_ui"}));
 
-    QString token = impl.requestModule("package_manager_ui", "package_manager");
+    QString token = plugin.requestModule("package_manager_ui", "package_manager");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -238,15 +243,15 @@ LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
     seedModule("some_other_module");
     seedModule("package_manager");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    impl.registerRestriction(kTrustedToken, "package_manager", QStringList{"package_manager_ui"});
+    plugin.registerRestriction(kTrustedToken, "package_manager", QStringList{"package_manager_ui"});
 
     // some_other_module is a known, loaded module (passes the identity gate)
     // but is not in package_manager's allowed-caller set — must be denied.
-    QString token = impl.requestModule("some_other_module", "package_manager");
+    QString token = plugin.requestModule("some_other_module", "package_manager");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -258,14 +263,14 @@ LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
     seedModule("restricted_target");
     seedModule("open_target");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
     // Restrict only restricted_target; open_target has no restriction.
-    impl.registerRestriction(kTrustedToken, "restricted_target", QStringList{"allowed_caller"});
+    plugin.registerRestriction(kTrustedToken, "restricted_target", QStringList{"allowed_caller"});
 
-    QString token = impl.requestModule("some_module", "open_target");
+    QString token = plugin.requestModule("some_module", "open_target");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -277,11 +282,11 @@ LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
     seedModule("requester_module");
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    QString token = impl.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
 }
@@ -293,15 +298,15 @@ LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
     seedModule("new_caller");
     seedModule("target_module");
 
-    CapabilityModuleImpl impl;
+    CapabilityModulePlugin plugin;
     LogosAPI api("capability_module");
-    impl.init(&api);
+    plugin.initLogos(&api);
 
-    impl.registerRestriction(kTrustedToken, "target_module", QStringList{"old_caller"});
+    plugin.registerRestriction(kTrustedToken, "target_module", QStringList{"old_caller"});
     // Re-register (as core does each boot) with a different allowed set.
-    impl.registerRestriction(kTrustedToken, "target_module", QStringList{"new_caller"});
+    plugin.registerRestriction(kTrustedToken, "target_module", QStringList{"new_caller"});
 
     // old_caller is no longer allowed; new_caller is.
-    LOGOS_ASSERT_TRUE(impl.requestModule("old_caller", "target_module").isEmpty());
-    LOGOS_ASSERT_FALSE(impl.requestModule("new_caller", "target_module").isEmpty());
+    LOGOS_ASSERT_TRUE(plugin.requestModule("old_caller", "target_module").isEmpty());
+    LOGOS_ASSERT_FALSE(plugin.requestModule("new_caller", "target_module").isEmpty());
 }

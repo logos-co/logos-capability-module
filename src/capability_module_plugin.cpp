@@ -1,4 +1,4 @@
-#include "capability_module_impl.h"
+#include "capability_module_plugin.h"
 
 #include <QByteArray>
 #include <QDebug>
@@ -6,15 +6,14 @@
 
 #include <algorithm>
 
-#include "logos_api.h"
 #include "logos_api_client.h"
 #include "token_manager.h"
 
 namespace {
 
-// Constant-time token comparison (mirrors ModuleProxy's): compare over the
-// longer of the two lengths and fold any length difference into the result,
-// so neither a correct prefix nor the secret's length leaks through timing.
+// Constant-time token comparison: compare over the longer of the two lengths
+// and fold any length difference into the result, so neither a correct prefix
+// nor the secret's length leaks through timing.
 bool constantTimeEquals(const QString& a, const QString& b)
 {
     const QByteArray ba = a.toUtf8();
@@ -31,30 +30,46 @@ bool constantTimeEquals(const QString& a, const QString& b)
 
 } // namespace
 
-QString CapabilityModuleImpl::requestModule(const QString& fromModuleName, const QString& moduleName)
+CapabilityModulePlugin::CapabilityModulePlugin(QObject* parent)
+    : QObject(parent)
 {
-    qDebug() << "CapabilityModuleImpl::requestModule called with fromModuleName:" << fromModuleName
+    qDebug() << "CapabilityModulePlugin: created";
+}
+
+CapabilityModulePlugin::~CapabilityModulePlugin()
+{
+    qDebug() << "CapabilityModulePlugin: destroyed";
+}
+
+void CapabilityModulePlugin::initLogos(LogosAPI* logosAPIInstance)
+{
+    logosAPI = logosAPIInstance;
+    qDebug() << "CapabilityModulePlugin: LogosAPI initialized";
+}
+
+QString CapabilityModulePlugin::requestModule(const QString& fromModuleName, const QString& moduleName)
+{
+    qDebug() << "CapabilityModulePlugin::requestModule called with fromModuleName:" << fromModuleName
              << "moduleName:" << moduleName;
 
-    LogosAPI* api = logosAPI();
-    if (!api) {
-        qWarning() << "CapabilityModuleImpl::requestModule: LogosAPI not initialized";
+    if (!logosAPI) {
+        qWarning() << "CapabilityModulePlugin::requestModule: LogosAPI not initialized";
         return {};
     }
 
     if (fromModuleName.isEmpty() || moduleName.isEmpty()) {
-        qWarning() << "CapabilityModuleImpl::requestModule: rejecting empty module name"
+        qWarning() << "CapabilityModulePlugin::requestModule: rejecting empty module name"
                    << "(fromModuleName / moduleName must both be set)";
         return {};
     }
 
-    TokenManager* tokenManager = api->getTokenManager();
+    TokenManager* tokenManager = logosAPI->getTokenManager();
 
     // Known-caller gate: the requesting identity must be a module capability_module
     // already knows about. Fail closed on an unknown name rather than mint a token
     // for a self-asserted identity that was never loaded.
     if (!tokenManager->getTokenKeys().contains(fromModuleName)) {
-        qWarning() << "CapabilityModuleImpl::requestModule: rejecting request from unknown"
+        qWarning() << "CapabilityModulePlugin::requestModule: rejecting request from unknown"
                    << "module identity:" << fromModuleName
                    << "- no token registered for it (unverified requesting identity)";
         return {};
@@ -64,7 +79,7 @@ QString CapabilityModuleImpl::requestModule(const QString& fromModuleName, const
     // unknown. Don't hand back a token the target would reject anyway — fail closed.
     const QString moduleToken = tokenManager->getToken(moduleName);
     if (moduleToken.isEmpty()) {
-        qWarning() << "CapabilityModuleImpl::requestModule: rejecting request for unknown"
+        qWarning() << "CapabilityModulePlugin::requestModule: rejecting request for unknown"
                    << "target module:" << moduleName << "- no token registered for it";
         return {};
     }
@@ -83,7 +98,7 @@ QString CapabilityModuleImpl::requestModule(const QString& fromModuleName, const
     // and flip the default once the policy is guaranteed to be present.
     if (auto it = m_restrictions.constFind(moduleName); it != m_restrictions.constEnd()) {
         if (!it->contains(fromModuleName)) {
-            qWarning() << "CapabilityModuleImpl::requestModule: access policy denies"
+            qWarning() << "CapabilityModulePlugin::requestModule: access policy denies"
                        << fromModuleName << "->" << moduleName
                        << "- caller not in the allowed set";
             return {};
@@ -92,51 +107,49 @@ QString CapabilityModuleImpl::requestModule(const QString& fromModuleName, const
 
     const QString authTokenString = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
-    qDebug() << "CapabilityModuleImpl: Calling informModuleToken on target module:" << moduleName;
+    qDebug() << "CapabilityModulePlugin: Calling informModuleToken on target module:" << moduleName;
 
-    const bool success = api->getClient(moduleName)->informModuleToken_module(
+    const bool success = logosAPI->getClient(moduleName)->informModuleToken_module(
         moduleToken, moduleName, fromModuleName, authTokenString);
     if (!success) {
-        qWarning() << "CapabilityModuleImpl: Failed to inform" << moduleName
+        qWarning() << "CapabilityModulePlugin: Failed to inform" << moduleName
                    << "about token for" << fromModuleName;
         return {};
     }
 
-    qDebug() << "CapabilityModuleImpl: Successfully informed" << moduleName
+    qDebug() << "CapabilityModulePlugin: Successfully informed" << moduleName
              << "about token for" << fromModuleName;
     return authTokenString;
 }
 
-bool CapabilityModuleImpl::registerRestriction(const QString& authToken,
-                                               const QString& targetModule,
-                                               const QStringList& allowedCallers)
+bool CapabilityModulePlugin::registerRestriction(const QString& authToken,
+                                                 const QString& targetModule,
+                                                 const QStringList& allowedCallers)
 {
-    LogosAPI* api = logosAPI();
-    if (!api) {
-        qWarning() << "CapabilityModuleImpl::registerRestriction: LogosAPI not initialized";
+    if (!logosAPI) {
+        qWarning() << "CapabilityModulePlugin::registerRestriction: LogosAPI not initialized";
         return false;
     }
 
     // Trusted-channel gate: only core (or capability_module itself) may
     // register restrictions. Both hold capability_module's auth token; a
-    // peer module only knows its own token and so cannot forge this. Same
-    // check ModuleProxy::informModuleToken makes — necessary because the
+    // peer module only knows its own token and so cannot forge this. The
     // generic isAuthorized() that fronts this method accepts ANY issued
     // token, which would otherwise let a malicious module rewrite the policy.
-    TokenManager* tokenManager = api->getTokenManager();
+    TokenManager* tokenManager = logosAPI->getTokenManager();
     const QString coreToken = tokenManager->getToken(QStringLiteral("core"));
     const QString capToken  = tokenManager->getToken(QStringLiteral("capability_module"));
     const bool callerIsTrusted =
         (!coreToken.isEmpty() && constantTimeEquals(authToken, coreToken)) ||
         (!capToken.isEmpty()  && constantTimeEquals(authToken, capToken));
     if (authToken.isEmpty() || !callerIsTrusted) {
-        qWarning() << "CapabilityModuleImpl::registerRestriction: rejecting restriction for"
+        qWarning() << "CapabilityModulePlugin::registerRestriction: rejecting restriction for"
                    << targetModule << "- caller is not the trusted core channel";
         return false;
     }
 
     if (targetModule.isEmpty()) {
-        qWarning() << "CapabilityModuleImpl::registerRestriction: rejecting empty target module";
+        qWarning() << "CapabilityModulePlugin::registerRestriction: rejecting empty target module";
         return false;
     }
 
@@ -144,7 +157,7 @@ bool CapabilityModuleImpl::registerRestriction(const QString& authToken,
     // single source of truth and re-registers the full set each boot.
     m_restrictions.insert(targetModule, QSet<QString>(allowedCallers.begin(), allowedCallers.end()));
 
-    qDebug() << "CapabilityModuleImpl::registerRestriction: target" << targetModule
+    qDebug() << "CapabilityModulePlugin::registerRestriction: target" << targetModule
              << "restricted to callers" << allowedCallers;
     return true;
 }
