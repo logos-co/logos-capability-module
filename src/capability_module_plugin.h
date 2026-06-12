@@ -25,7 +25,8 @@ public:
 
     Q_INVOKABLE void initLogos(LogosAPI* logosAPIInstance);
 
-    Q_INVOKABLE QString requestModule(const QString& fromModuleName,
+    Q_INVOKABLE QString requestModule(const QString& authToken,
+                                      const QString& fromModuleName,
                                       const QString& moduleName) override;
 
     Q_INVOKABLE bool registerRestriction(const QString& authToken,

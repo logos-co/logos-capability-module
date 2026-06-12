@@ -45,6 +45,12 @@ void seedModule(const QString& name) {
     TokenManager::instance().saveToken(name, "seed-token-" + name);
 }
 
+// The genuine auth token a seeded module holds — what it presents to prove its
+// identity to requestModule (F-002). Matches what getToken(name) returns.
+QString tokenOf(const QString& name) {
+    return "seed-token-" + name;
+}
+
 // The trusted core/capability_module auth token. registerRestriction requires
 // it; only core holds it in production. In tests it is whatever seedModule
 // stored for "capability_module".
@@ -69,7 +75,7 @@ LOGOS_TEST(requestModule_returns_uuid_format_token) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule(tokenOf("requester_module"), "requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -86,7 +92,7 @@ LOGOS_TEST(requestModule_mints_unique_token_per_call) {
 
     QSet<QString> tokens;
     for (int i = 0; i < 10; ++i) {
-        tokens.insert(plugin.requestModule("requester", "target"));
+        tokens.insert(plugin.requestModule(tokenOf("requester"), "requester", "target"));
     }
 
     LOGOS_ASSERT_EQ(tokens.size(), 10);
@@ -103,7 +109,7 @@ LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule(tokenOf("requester_module"), "requester_module", "target_module");
 
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
 }
@@ -114,7 +120,7 @@ LOGOS_TEST(requestModule_returns_empty_when_not_initialized) {
     LogosMockSetup mock;
     CapabilityModulePlugin plugin;
 
-    QString token = plugin.requestModule("requester", "target");
+    QString token = plugin.requestModule(tokenOf("requester"), "requester", "target");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -127,7 +133,7 @@ LOGOS_TEST(requestModule_rejects_empty_fromModuleName) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("", "target_module");
+    QString token = plugin.requestModule("", "", "target_module");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -141,8 +147,9 @@ LOGOS_TEST(requestModule_rejects_unknown_fromModuleName) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    // Spoofing a non-loaded identity must not mint a token.
-    QString token = plugin.requestModule("spoofed_module", "target_module");
+    // A non-loaded identity has no registered token, so no token can prove it —
+    // even a plausible-looking token must not mint anything.
+    QString token = plugin.requestModule(tokenOf("spoofed_module"), "spoofed_module", "target_module");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -156,7 +163,7 @@ LOGOS_TEST(requestModule_rejects_unknown_target) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("requester_module", "missing_target");
+    QString token = plugin.requestModule(tokenOf("requester_module"), "requester_module", "missing_target");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -170,7 +177,7 @@ LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule(tokenOf("requester_module"), "requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -231,7 +238,7 @@ LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
     LOGOS_ASSERT_TRUE(plugin.registerRestriction(
         kTrustedToken, "package_manager", QStringList{"package_manager_ui"}));
 
-    QString token = plugin.requestModule("package_manager_ui", "package_manager");
+    QString token = plugin.requestModule(tokenOf("package_manager_ui"), "package_manager_ui", "package_manager");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -249,9 +256,9 @@ LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
 
     plugin.registerRestriction(kTrustedToken, "package_manager", QStringList{"package_manager_ui"});
 
-    // some_other_module is a known, loaded module (passes the identity gate)
-    // but is not in package_manager's allowed-caller set — must be denied.
-    QString token = plugin.requestModule("some_other_module", "package_manager");
+    // some_other_module is a known, loaded module (passes the identity gate with
+    // its own token) but is not in package_manager's allowed-caller set — denied.
+    QString token = plugin.requestModule(tokenOf("some_other_module"), "some_other_module", "package_manager");
 
     LOGOS_ASSERT_TRUE(token.isEmpty());
 }
@@ -270,7 +277,7 @@ LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
     // Restrict only restricted_target; open_target has no restriction.
     plugin.registerRestriction(kTrustedToken, "restricted_target", QStringList{"allowed_caller"});
 
-    QString token = plugin.requestModule("some_module", "open_target");
+    QString token = plugin.requestModule(tokenOf("some_module"), "some_module", "open_target");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
     LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
@@ -286,7 +293,7 @@ LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
     LogosAPI api("capability_module");
     plugin.initLogos(&api);
 
-    QString token = plugin.requestModule("requester_module", "target_module");
+    QString token = plugin.requestModule(tokenOf("requester_module"), "requester_module", "target_module");
 
     LOGOS_ASSERT_FALSE(token.isEmpty());
 }
@@ -307,6 +314,6 @@ LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
     plugin.registerRestriction(kTrustedToken, "target_module", QStringList{"new_caller"});
 
     // old_caller is no longer allowed; new_caller is.
-    LOGOS_ASSERT_TRUE(plugin.requestModule("old_caller", "target_module").isEmpty());
-    LOGOS_ASSERT_FALSE(plugin.requestModule("new_caller", "target_module").isEmpty());
+    LOGOS_ASSERT_TRUE(plugin.requestModule(tokenOf("old_caller"), "old_caller", "target_module").isEmpty());
+    LOGOS_ASSERT_FALSE(plugin.requestModule(tokenOf("new_caller"), "new_caller", "target_module").isEmpty());
 }

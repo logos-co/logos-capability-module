@@ -16,8 +16,10 @@ public:
     virtual ~CapabilityModuleInterface() = default;
 
     // Mint an auth token allowing `fromModuleName` to call `moduleName`, inform
-    // the target of the new token, and return it to the caller.
-    Q_INVOKABLE virtual QString requestModule(const QString& fromModuleName,
+    // the target of the new token, and return it to the caller. `fromModuleName`
+    // is verified against `authToken` (the caller's own token), not trusted.
+    Q_INVOKABLE virtual QString requestModule(const QString& authToken,
+                                              const QString& fromModuleName,
                                               const QString& moduleName) = 0;
 
     // Register an access restriction: only the listed caller modules may obtain

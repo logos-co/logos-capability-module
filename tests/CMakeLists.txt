@@ -10,4 +10,5 @@ logos_test(
     TEST_SOURCES
         main.cpp
         test_capability_module.cpp
+        test_capability_module_f002.cpp
 )

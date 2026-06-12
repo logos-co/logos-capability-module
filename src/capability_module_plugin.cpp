@@ -47,7 +47,7 @@ void CapabilityModulePlugin::initLogos(LogosAPI* logosAPIInstance)
     qDebug() << "CapabilityModulePlugin: LogosAPI initialized";
 }
 
-QString CapabilityModulePlugin::requestModule(const QString& fromModuleName, const QString& moduleName)
+QString CapabilityModulePlugin::requestModule(const QString& authToken, const QString& fromModuleName, const QString& moduleName)
 {
     qDebug() << "CapabilityModulePlugin::requestModule called with fromModuleName:" << fromModuleName
              << "moduleName:" << moduleName;
@@ -65,13 +65,15 @@ QString CapabilityModulePlugin::requestModule(const QString& fromModuleName, con
 
     TokenManager* tokenManager = logosAPI->getTokenManager();
 
-    // Known-caller gate: the requesting identity must be a module capability_module
-    // already knows about. Fail closed on an unknown name rather than mint a token
-    // for a self-asserted identity that was never loaded.
-    if (!tokenManager->getTokenKeys().contains(fromModuleName)) {
-        qWarning() << "CapabilityModulePlugin::requestModule: rejecting request from unknown"
-                   << "module identity:" << fromModuleName
-                   << "- no token registered for it (unverified requesting identity)";
+    // Identity gate: the caller must prove it is `fromModuleName` by presenting
+    // that module's own token, which the host registered here. A bare name is not
+    // trusted, so a peer cannot spoof another module's identity.
+    const QString expectedToken = tokenManager->getToken(fromModuleName);
+    if (authToken.isEmpty() || expectedToken.isEmpty() ||
+        !constantTimeEquals(authToken, expectedToken)) {
+        qWarning() << "CapabilityModulePlugin::requestModule: rejecting request - caller"
+                   << "identity" << fromModuleName << "not proven by the presented token"
+                   << "(unverified or spoofed requesting identity)";
         return {};
     }
 
