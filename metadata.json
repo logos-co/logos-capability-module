@@ -1,5 +1,6 @@
 {
   "name": "capability_module",
+  "display_name": "Capabilities",
   "version": "1.0.0",
   "description": "Coordinates permissions between modules",
   "author": "Logos Core Team",
