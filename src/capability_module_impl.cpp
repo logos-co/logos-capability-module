@@ -27,11 +27,15 @@ bool constantTimeEquals(const std::string& a, const std::string& b)
 std::string mintToken()
 {
     std::random_device rd;
+    // Sample each hex nibble uniformly over 0..15 rather than taking rd()'s low
+    // bits, which some std::random_device implementations don't distribute
+    // uniformly.
+    std::uniform_int_distribution<int> nibble(0, 15);
     static const char kHex[] = "0123456789abcdef";
     std::string s;
     s.reserve(32);
     for (int i = 0; i < 32; ++i)
-        s.push_back(kHex[rd() & 0xF]);
+        s.push_back(kHex[nibble(rd)]);
     return s;
 }
 
