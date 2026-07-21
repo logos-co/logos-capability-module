@@ -5,8 +5,14 @@
   "description": "Coordinates permissions between modules",
   "author": "Logos Core Team",
   "type": "core",
+  "interface": "universal",
+  "concurrency": "multi",
   "category": "security",
   "main": "capability_module_plugin",
+  "codegen": {
+    "impl_class": "CapabilityModuleImpl",
+    "impl_header": "capability_module_impl.h"
+  },
   "dependencies": [],
   "capabilities": [
     "module_coordination",
