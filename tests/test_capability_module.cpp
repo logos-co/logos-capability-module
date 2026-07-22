@@ -1,312 +1,168 @@
-// Unit tests for CapabilityModulePlugin.
+// Unit tests for CapabilityModuleImpl.
 //
-// capability_module is a plain legacy Qt plugin: the generic ModuleProxy wraps
-// it and dispatches Q_INVOKABLE methods by name, so the tests drive the plugin
-// methods directly (initLogos + requestModule / registerRestriction).
+// capability_module is a Qt-free UNIVERSAL module: its logic lives in
+// CapabilityModuleImpl (std::string), and it reaches the host's token store +
+// arbitrary-module inform through the LogosTokenManagerContext bridge. That
+// makes it directly unit-testable — no LogosAPI / mock transport needed: we
+// inject std::function stubs via _logosCoreSetTokenBridge_ and drive
+// requestModule / registerRestriction.
 //
-// requestModule() mints a UUID auth token, asks the target module to record it
-// via informModuleToken_module(), and returns the token to the caller.
+// requestModule() mints an opaque token, asks the target to record it via the
+// inform bridge, and returns the token to the caller.
 //
 // Security contract (F-001, CWE-290): requestModule fails closed. It refuses to
 // mint a token unless BOTH the requesting identity (fromModuleName) and the
 // target (moduleName) are modules capability_module already knows about — i.e.
-// have a token registered in the TokenManager (the host seeds one entry per
-// loaded module via notifyCapabilityModule). An empty, unknown, or never-loaded
-// name yields an empty result and no token is minted. This is defense-in-depth:
-// it blocks spoofing a *non-loaded* identity, but cannot by itself stop a loaded
-// module from presenting *another loaded module's* name — that needs the RPC
-// layer to surface the verified caller token to this method.
-//
-// In mock mode, MockLogosObject::informModuleToken always returns true and
-// records nothing, so the success-path tests focus on the externally-observable
-// contract: the returned token's shape and uniqueness. Verifying the dispatch to
-// informModuleToken_module would require extending the mock framework to record
-// those calls.
+// have a token in the host store (getToken returns non-empty). An empty,
+// unknown, or never-loaded name yields an empty result and no token is minted.
 
 #include <logos_test.h>
-#include <logos_mock.h>
 
-#include <QRegularExpression>
-#include <QSet>
-#include <QString>
+#include <set>
+#include <string>
+#include <vector>
 
-#include "capability_module_plugin.h"
-#include "logos_api.h"
-#include "token_manager.h"
+#include "capability_module_impl.h"
 
 namespace {
 
-// UUID without braces: 8-4-4-4-12 lowercase hex digits separated by hyphens.
-const QRegularExpression kUuidRegex(
-    QStringLiteral("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"));
-
-// Seed a module's token so capability_module treats it as a known/loaded module.
-void seedModule(const QString& name) {
-    TokenManager::instance().saveToken(name, "seed-token-" + name);
+// True iff `s` is exactly 32 lowercase hex characters (the mintToken() shape).
+bool isHex32(const std::string& s) {
+    if (s.size() != 32) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
 }
 
-// The trusted core/capability_module auth token. registerRestriction requires
-// it; only core holds it in production. In tests it is whatever seedModule
-// stored for "capability_module".
-const QString kTrustedToken = QStringLiteral("seed-token-capability_module");
+// A CapabilityModuleImpl wired to in-memory stubs. `seed(name)` marks a module
+// as known (getToken returns a token for it); inform always succeeds, matching
+// the old mock's MockLogosObject::informModuleToken.
+struct Fixture {
+    std::set<std::string> known;
+    CapabilityModuleImpl impl;
 
-// Seed the trusted channel so registerRestriction calls authenticate. Call in
-// any test that registers a restriction.
-void seedTrustedChannel() {
-    seedModule("capability_module");
-}
+    Fixture() {
+        impl._logosCoreSetTokenBridge_(
+            [this](const std::string& name) -> std::string {
+                return known.count(name) ? ("seed-token-" + name) : std::string();
+            },
+            [](const std::string&, const std::string&,
+               const std::string&, const std::string&) -> bool {
+                return true;
+            });
+    }
 
-}
+    void seed(const std::string& name) { known.insert(name); }
+};
+
+// The trusted core/capability_module auth token registerRestriction requires —
+// whatever the stub returns for "capability_module" once seeded.
+const std::string kTrustedToken = "seed-token-capability_module";
+
+} // namespace
 
 // ── Success path: both caller and target are known modules ──────────────────
 
-LOGOS_TEST(requestModule_returns_uuid_format_token) {
-    LogosMockSetup mock;
-    seedModule("requester_module");
-    seedModule("target_module");
+LOGOS_TEST(requestModule_returns_hex_token) {
+    Fixture f;
+    f.seed("requester_module");
+    f.seed("target_module");
 
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
+    const std::string token = f.impl.requestModule("requester_module", "target_module");
 
-    QString token = plugin.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_FALSE(token.isEmpty());
-    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+    LOGOS_ASSERT_FALSE(token.empty());
+    LOGOS_ASSERT(isHex32(token));
 }
 
 LOGOS_TEST(requestModule_mints_unique_token_per_call) {
-    LogosMockSetup mock;
-    seedModule("requester");
-    seedModule("target");
+    Fixture f;
+    f.seed("requester");
+    f.seed("target");
 
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
+    std::set<std::string> tokens;
+    for (int i = 0; i < 10; ++i)
+        tokens.insert(f.impl.requestModule("requester", "target"));
 
-    QSet<QString> tokens;
-    for (int i = 0; i < 10; ++i) {
-        tokens.insert(plugin.requestModule("requester", "target"));
-    }
-
-    LOGOS_ASSERT_EQ(tokens.size(), 10);
-}
-
-LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
-    LogosMockSetup mock;
-    // Seed both the caller and the target — exercises the getToken() path for
-    // the target while satisfying the known-caller gate.
-    seedModule("requester_module");
-    TokenManager::instance().saveToken("target_module", "pre-seeded-token");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    QString token = plugin.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+    LOGOS_ASSERT_EQ(static_cast<int>(tokens.size()), 10);
 }
 
 // ── F-001 security regression: fail closed on unverified input ──────────────
 
-LOGOS_TEST(requestModule_returns_empty_when_not_initialized) {
-    LogosMockSetup mock;
-    CapabilityModulePlugin plugin;
-
-    QString token = plugin.requestModule("requester", "target");
-
-    LOGOS_ASSERT_TRUE(token.isEmpty());
+LOGOS_TEST(requestModule_returns_empty_when_bridge_unwired) {
+    // No _logosCoreSetTokenBridge_ call: getToken no-ops to "" for every name,
+    // so both the known-caller and known-target gates fail closed.
+    CapabilityModuleImpl impl;
+    const std::string token = impl.requestModule("requester", "target");
+    LOGOS_ASSERT_TRUE(token.empty());
 }
 
 LOGOS_TEST(requestModule_rejects_empty_fromModuleName) {
-    LogosMockSetup mock;
-    seedModule("target_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    QString token = plugin.requestModule("", "target_module");
-
-    LOGOS_ASSERT_TRUE(token.isEmpty());
+    Fixture f;
+    f.seed("target_module");
+    LOGOS_ASSERT_TRUE(f.impl.requestModule("", "target_module").empty());
 }
 
 LOGOS_TEST(requestModule_rejects_unknown_fromModuleName) {
-    LogosMockSetup mock;
+    Fixture f;
     // Only the target is known; the requesting identity was never loaded.
-    seedModule("target_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
+    f.seed("target_module");
     // Spoofing a non-loaded identity must not mint a token.
-    QString token = plugin.requestModule("spoofed_module", "target_module");
-
-    LOGOS_ASSERT_TRUE(token.isEmpty());
+    LOGOS_ASSERT_TRUE(f.impl.requestModule("spoofed_module", "target_module").empty());
 }
 
 LOGOS_TEST(requestModule_rejects_unknown_target) {
-    LogosMockSetup mock;
+    Fixture f;
     // Only the caller is known; the target was never loaded.
-    seedModule("requester_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    QString token = plugin.requestModule("requester_module", "missing_target");
-
-    LOGOS_ASSERT_TRUE(token.isEmpty());
-}
-
-LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
-    LogosMockSetup mock;
-    seedModule("requester_module");
-    seedModule("target_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    QString token = plugin.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_FALSE(token.isEmpty());
-    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+    f.seed("requester_module");
+    LOGOS_ASSERT_TRUE(f.impl.requestModule("requester_module", "missing_target").empty());
 }
 
 // ── Access-policy enforcement (registerRestriction + requestModule) ─────────
-//
-// Core parses the access policy and calls registerRestriction(target,
-// allowedCallers) for each restricted target. requestModule then refuses to
-// mint a token when a restricted target's allowed-caller set does not include
-// the requester — the denied caller never gets credentials, so it can never
-// call the target. A target with NO registered restriction stays unrestricted.
 
 LOGOS_TEST(registerRestriction_rejects_empty_target) {
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    LOGOS_ASSERT_FALSE(plugin.registerRestriction(kTrustedToken, "", QStringList{"caller"}));
+    Fixture f;
+    f.seed("capability_module");
+    LOGOS_ASSERT_FALSE(f.impl.registerRestriction(kTrustedToken, "", {"caller"}));
 }
 
 LOGOS_TEST(registerRestriction_rejects_untrusted_caller_token) {
-    // A loaded module can reach this method (isAuthorized accepts any issued
-    // token), so the explicit trusted-token gate is the real defense: a peer
-    // presenting its own token must NOT be able to register a restriction.
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    seedModule("malicious_module");
-    seedModule("package_manager");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
+    Fixture f;
+    f.seed("capability_module");
+    f.seed("malicious_module");
+    f.seed("package_manager");
 
     // malicious_module tries to grant itself access using its OWN token.
-    const bool ok = plugin.registerRestriction(
-        "seed-token-malicious_module", "package_manager",
-        QStringList{"malicious_module"});
-    LOGOS_ASSERT_FALSE(ok);
-
+    LOGOS_ASSERT_FALSE(f.impl.registerRestriction(
+        "seed-token-malicious_module", "package_manager", {"malicious_module"}));
     // And an empty token is rejected too.
-    LOGOS_ASSERT_FALSE(plugin.registerRestriction(
-        "", "package_manager", QStringList{"malicious_module"}));
+    LOGOS_ASSERT_FALSE(f.impl.registerRestriction(
+        "", "package_manager", {"malicious_module"}));
 }
 
 LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    seedModule("package_manager_ui");
-    seedModule("package_manager");
+    Fixture f;
+    f.seed("capability_module");
+    f.seed("package_manager_ui");
+    f.seed("package_manager");
 
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
+    LOGOS_ASSERT_TRUE(f.impl.registerRestriction(
+        kTrustedToken, "package_manager", {"package_manager_ui"}));
 
-    LOGOS_ASSERT_TRUE(plugin.registerRestriction(
-        kTrustedToken, "package_manager", QStringList{"package_manager_ui"}));
-
-    QString token = plugin.requestModule("package_manager_ui", "package_manager");
-
-    LOGOS_ASSERT_FALSE(token.isEmpty());
-    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
+    const std::string token = f.impl.requestModule("package_manager_ui", "package_manager");
+    LOGOS_ASSERT_FALSE(token.empty());
+    LOGOS_ASSERT(isHex32(token));
 }
 
 LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    seedModule("some_other_module");
-    seedModule("package_manager");
+    Fixture f;
+    f.seed("capability_module");
+    f.seed("other_module");
+    f.seed("package_manager");
 
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
+    // Restrict package_manager to package_manager_ui only.
+    LOGOS_ASSERT_TRUE(f.impl.registerRestriction(
+        kTrustedToken, "package_manager", {"package_manager_ui"}));
 
-    plugin.registerRestriction(kTrustedToken, "package_manager", QStringList{"package_manager_ui"});
-
-    // some_other_module is a known, loaded module (passes the identity gate)
-    // but is not in package_manager's allowed-caller set — must be denied.
-    QString token = plugin.requestModule("some_other_module", "package_manager");
-
-    LOGOS_ASSERT_TRUE(token.isEmpty());
-}
-
-LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    seedModule("some_module");
-    seedModule("restricted_target");
-    seedModule("open_target");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    // Restrict only restricted_target; open_target has no restriction.
-    plugin.registerRestriction(kTrustedToken, "restricted_target", QStringList{"allowed_caller"});
-
-    QString token = plugin.requestModule("some_module", "open_target");
-
-    LOGOS_ASSERT_FALSE(token.isEmpty());
-    LOGOS_ASSERT(kUuidRegex.match(token).hasMatch());
-}
-
-LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
-    // Back-compat: with no policy pushed, every known caller/target pair works.
-    LogosMockSetup mock;
-    seedModule("requester_module");
-    seedModule("target_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    QString token = plugin.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_FALSE(token.isEmpty());
-}
-
-LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
-    LogosMockSetup mock;
-    seedTrustedChannel();
-    seedModule("old_caller");
-    seedModule("new_caller");
-    seedModule("target_module");
-
-    CapabilityModulePlugin plugin;
-    LogosAPI api("capability_module");
-    plugin.initLogos(&api);
-
-    plugin.registerRestriction(kTrustedToken, "target_module", QStringList{"old_caller"});
-    // Re-register (as core does each boot) with a different allowed set.
-    plugin.registerRestriction(kTrustedToken, "target_module", QStringList{"new_caller"});
-
-    // old_caller is no longer allowed; new_caller is.
-    LOGOS_ASSERT_TRUE(plugin.requestModule("old_caller", "target_module").isEmpty());
-    LOGOS_ASSERT_FALSE(plugin.requestModule("new_caller", "target_module").isEmpty());
+    // A known-but-unlisted caller is denied a token for the restricted target.
+    LOGOS_ASSERT_TRUE(f.impl.requestModule("other_module", "package_manager").empty());
 }

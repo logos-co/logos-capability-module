@@ -12,7 +12,6 @@ endif()
 logos_module(
     NAME capability_module
     SOURCES
-        src/capability_module_interface.h
-        src/capability_module_plugin.h
-        src/capability_module_plugin.cpp
+        src/capability_module_impl.h
+        src/capability_module_impl.cpp
 )
