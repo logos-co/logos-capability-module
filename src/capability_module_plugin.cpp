@@ -109,8 +109,17 @@ QString CapabilityModulePlugin::requestModule(const QString& fromModuleName, con
 
     qDebug() << "CapabilityModulePlugin: Calling informModuleToken on target module:" << moduleName;
 
+    // Bounded push. The target must be reachable to be told about the token,
+    // which means its source has to be published. A module that calls out from
+    // its own initializer has not published yet (older SDKs publish only after
+    // the initializer returns), so this can be the one grant that cannot be
+    // satisfied. Waiting the default 20s there would blow every startup deadline
+    // downstream — the standalone app gives a ui-host 10s to report ready — and
+    // turn one unreachable module into a dead UI. Fail fast instead: the caller
+    // gets no token and a clear reason, and the rest of startup keeps moving.
+    static constexpr int kTokenPushTimeoutMs = 3000;
     const bool success = logosAPI->getClient(moduleName)->informModuleToken_module(
-        moduleToken, moduleName, fromModuleName, authTokenString);
+        moduleToken, moduleName, fromModuleName, authTokenString, kTokenPushTimeoutMs);
     if (!success) {
         qWarning() << "CapabilityModulePlugin: Failed to inform" << moduleName
                    << "about token for" << fromModuleName;
