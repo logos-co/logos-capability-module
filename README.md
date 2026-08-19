@@ -33,17 +33,6 @@ nix build .#checks.<system>.unit-tests -L                       # builds + runs 
 ./result/bin/capability_module_tests --filter requestModule     # filter by name
 ```
 
-> **The unit tests do not currently build.** `tests/` was not migrated along with the
-> `universal` rewrite (fc39b1b): `tests/CMakeLists.txt` still lists
-> `../src/capability_module_plugin.cpp` and `test_capability_module.cpp` still includes
-> `capability_module_plugin.h` and drives a `CapabilityModulePlugin`. That commit deleted
-> `src/capability_module_plugin.{h,cpp}` and `src/capability_module_interface.h`, taking
-> `CapabilityModulePlugin` with them, so CMake fails at configure time on the missing source
-> file. The tests need porting
-> to `CapabilityModuleImpl`, whose methods take and return `std::string` /
-> `std::vector<std::string>` rather than `QString` / `QStringList`, and which reads the token
-> store through `logos_host_services.h` instead of `TokenManager` directly.
-
 ## Layout
 
 ```

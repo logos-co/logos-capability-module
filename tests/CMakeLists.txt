@@ -6,7 +6,7 @@ include(LogosTest)
 logos_test(
     NAME capability_module_tests
     MODULE_SOURCES
-        ../src/capability_module_plugin.cpp
+        ../src/capability_module_impl.cpp
     TEST_SOURCES
         main.cpp
         test_capability_module.cpp
