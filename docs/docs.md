@@ -46,7 +46,7 @@ API — there is no dispatch marker; the generator derives the contract from the
 
 | Method | Purpose |
 |--------|---------|
-| `requestModule(fromModuleName, moduleName) → std::string` | Generates a fresh token for `fromModuleName` to call `moduleName`, informs the target of the token, and returns it to the caller. |
+| `requestModule(fromModuleName, moduleName) → std::string` | Generates a fresh token for `fromModuleName` to call `moduleName`, informs the target of the token, and returns it to the caller. Returns an **empty string** on any refusal — unknown caller, unknown target, policy denial, or an unreachable target. |
 | `registerRestriction(authToken, targetModule, allowedCallers) → bool` | Records an allowed-caller list for `targetModule`. Refused unless `authToken` is the trusted core/capability channel. |
 
 Typed events would be declared under a `logos_events:` section. The module currently emits none.
@@ -60,7 +60,9 @@ logos-capability-module/
 ├── src/
 │   ├── capability_module_impl.{h,cpp}   # CapabilityModuleImpl : LogosModuleContext — plain
 │   │                                    # public methods; no Qt, no dispatch macros
-│   └── capability_module.lidl           # the contract
+│   └── capability_module.lidl           # DEAD: the hand-committed contract from the
+│                                        # `interface: "legacy"` era. Nothing reads it now —
+│                                        # the contract in use is generated (step 1 below)
 ├── tests/                               # Unit tests via logos-test-framework
 │   ├── CMakeLists.txt
 │   ├── main.cpp
@@ -87,17 +89,41 @@ library now, and making one a Qt plugin is a downstream hosting step.
 
 ### 4.2 Responsibilities
 
-- **Token issuance for inter-module calls**: On `requestModule`, generate a UUID token for the caller/target pair.
-- **Inform targets of new tokens**: Use `LogosAPIClient::informModuleToken_module` to tell the target module the new token (using the capability module's own token for that target).
-- **Central coordination**: Current implementation always grants requests; future versions may enforce capability/permission policies.
+- **Token issuance for inter-module calls**: On `requestModule`, mint a UUID token for the
+  caller/target pair with `boost::uuids::random_generator` — deliberately the same
+  CSPRNG-seeded generator the host uses, because the minted value **is** the auth token.
+- **Inform targets of new tokens**: `logos::host::informModuleTokenTo()`, over an `lp_client`
+  created for the target, tells that module about the new token. (Was
+  `LogosAPIClient::informModuleToken_module` — `LogosAPIClient` is a Qt type this Qt-free
+  impl cannot use.) It authenticates with `tokenFor(target)` — the token this image holds
+  under the **target's** name — not with anything belonging to the requester.
+- **Central coordination**: requests are **not** always granted. Three gates run before a
+  token is minted — the caller must be a module this image holds a token for (this reads the
+  token registry, so an ungranted `token_registry` refuses *every* request), the target must
+  likewise be known, and a target with a registered restriction must list the caller. A
+  target with **no** registered restriction is still unrestricted: that last gate is
+  fail-OPEN by design during rollout (`TODO(access-policy)` in the impl), with
+  deny-by-default as the end state.
 
 ### 4.3 Token Flow
 
 1. Caller invokes `requestModule(from, target)`.
-2. Capability module creates a UUID token.
-3. It looks up its auth token for the target from `TokenManager`.
-4. Calls `informModuleToken_module` on the target (via `LogosAPIClient`) with: capability module's token, target module name, requester name, new token.
-5. Returns the new token to the caller. Both sides now share the token for subsequent RPCs.
+2. Both names are checked: non-empty, `from` present in `logos::host::tokenKeys()`, `target`
+   holding a token, and the access policy allowing the pair. Any refusal returns an empty
+   string and nothing is minted.
+3. The auth token used for the push comes from `logos::host::tokenFor(target)` — the token
+   this image holds under the target's name. (Was a direct `TokenManager` lookup; the Qt-free
+   impl goes through the `logos_host_services.h` veneer instead. Note `tokenFor` wraps
+   `lp_token_get`, which is **not** gated — only enumeration via `lp_token_keys` is.)
+4. It mints the UUID token, creates an `lp_client` for the target, and calls
+   `logos::host::informModuleTokenTo(client, authToken = tokenFor(target),
+   originModule = the target, moduleName = the REQUESTER, token = the new token, 3000 ms)`.
+   The argument order is the trap: swapping the last two still compiles and still returns an
+   ok-shaped status, while telling the wrong module about the wrong token. The 3 s timeout is
+   deliberately shorter than the protocol default (20 s), so a module calling out from its own
+   initializer fails fast instead of blowing downstream startup deadlines.
+5. Returns the new token to the caller. Both sides now share the token for subsequent RPCs. If
+   the push fails or times out, the caller gets an empty string instead.
 
 ## 5. Usage
 
@@ -122,8 +148,15 @@ The returned token must be used by the caller when invoking methods on the targe
 - `author`: module author/maintainer
 - `type`: `core`
 - `interface`: `universal` — the header-first cdylib path. With `codegen.impl_class` /
-  `codegen.impl_header` it names the class the contract is derived from. (Was `provider`,
-  which selected a `LogosProviderBase` + `LOGOS_METHOD` codegen path that no longer exists.)
+  `codegen.impl_header` it names the class the contract is derived from. Two earlier values:
+  `provider` until 22e54ff (a `LogosProviderBase` + `LOGOS_METHOD` codegen path that no longer
+  exists), then the default `legacy` — a handcrafted `Q_OBJECT` / `Q_INVOKABLE` Qt plugin —
+  until fc39b1b.
+- `codegen`: `impl_class` / `impl_header` — the class and header the contract is derived from
+  (`CapabilityModuleImpl`, `src/capability_module_impl.h`)
+- `host_services`: `["token_registry", "token_delivery"]` — the two privileges this module
+  declares and the host grants, bound to its verified name. Ungranted, every gated call fails
+  closed (see §2.1)
 - `capabilities`: typically includes `module_coordination`, `permission_management`
 - `dependencies`: usually none (bundled with core)
 - `nix`: build configuration consumed by `logos-module-builder` (packages, external_libraries, cmake flags)
