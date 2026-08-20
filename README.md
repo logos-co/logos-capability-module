@@ -49,7 +49,7 @@ docs/docs.md                         # module specification
 doctests/                            # end-to-end composition doc-test
 metadata.json                        # interface: universal; codegen.{impl_class,impl_header};
                                      # host_services; nix.* build config
-flake.nix                            # rev-pins logos-module-builder, calls mkLogosModule
+flake.nix                            # logos-module-builder (master), calls mkLogosModule
 CMakeLists.txt                       # calls logos_module()
 ```
 

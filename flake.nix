@@ -2,19 +2,22 @@
   description = "Logos Capability Module - Coordinates permissions between modules";
 
   inputs = {
-    # Rev-pinned, not branch-head. This module is `interface: "universal"` and
-    # declares metadata.json#host_services (token_registry, token_delivery);
-    # parsing and validating that key landed in module-builder 85dfb34, and the
-    # cdylib glue it needs is only emitted from the maintained generator in
-    # logos-plugin-qt since ed50731 — the out-of-repo fix this repo's own C4
-    # commit names as its prerequisite. Neither commit is on module-builder's
-    # master, so an unpinned url makes `nix flake update` relock onto a builder
-    # that cannot build this module at all.
+    # Plain master, no rev. This module is `interface: "universal"` and declares
+    # metadata.json#host_services (token_registry, token_delivery). Both of the
+    # things that used to require a branch pin are now on module-builder master:
     #
-    # c60d4a9 is the tip of feat/sdk-codegen-b4-qt-host-repoint and a
-    # fast-forward from master (9ac3a15 is an ancestor of it), so nothing on
-    # master is given up. Drop the rev once that branch merges.
-    logos-module-builder.url = "github:logos-co/logos-module-builder/c60d4a9cf32cb5281909e53159c9c4cfeb993847";
+    #   * parsing and validating metadata.json#host_services — lib/parseMetadata.nix
+    #     (its allowlist even names capability_module as the sole module permitted
+    #     to ask for the trust-root services), covered by tests/test-parse-metadata.nix
+    #   * emitting the cdylib glue with logos-plugin-qt's logos-qt-host-generator
+    #     rather than logos-qt-sdk's stale copy — lib/modulePreConfigure.nix,
+    #     asserted by tests/test-module-pre-configure.nix
+    #
+    # module-builder master (8cd62c7) also unpins all four SDK inputs, so this
+    # module now resolves the whole B3/B4 closure at master. Those PRs were
+    # SQUASH-merged, so the retired rev is correctly NOT an ancestor of master —
+    # the files above are the test, not ancestry.
+    logos-module-builder.url = "github:logos-co/logos-module-builder";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:
