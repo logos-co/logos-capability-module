@@ -1,26 +1,25 @@
-; capability_module contract.
+; capability_module contract — DEAD FILE. Nothing reads this any more.
 ;
-; capability_module is a handcrafted Qt plugin (`interface: "legacy"`), so no
-; contract is derived from its sources the way a `universal` module's is. This
-; file is that contract, committed by hand.
+; HISTORY. capability_module used to be a handcrafted Qt plugin
+; (`interface: "legacy"`), which derives no contract from its sources. This file
+; was that contract, committed by hand, and it existed for ONE reason: when
+; cross-compiling (x86_64-w64-mingw32) the builder cannot dlopen the Windows PE
+; it just produced, so the typed consumer API could not be recovered by
+; introspecting the plugin. buildHeaders fell back to this file. Native builds
+; introspected the binary and ignored it.
 ;
-; It exists for ONE reason: when cross-compiling (x86_64-w64-mingw32) the
-; builder cannot dlopen the Windows PE it just produced, so the typed consumer
-; API cannot be recovered by introspecting the plugin. logos-plugin-qt's
-; buildHeaders.nix falls back to this file (see `headerContractLidl` in
-; logos-module-builder/lib/mkLogosModule.nix). Native builds still introspect
-; the binary and ignore this file entirely.
+; WHY IT IS DEAD. The module is now `interface: "universal"`, so it publishes a
+; `lidl` flake output DERIVED from src/capability_module_impl.h, and
+; `headerContractLidl` (logos-module-builder/lib/mkLogosModule.nix) prefers that
+; derived contract over a committed src/<name>.lidl. The committed-file branch is
+; only reached when a module publishes no `lidl` output at all.
 ;
-; It is NOT published as this module's `lidl` flake output: doing so would flip
-; every downstream consumer off the transitional header-copy path and onto
-; `--dep`, changing native builds across the tree.
+; It is also out of date: the migration to `universal` deleted
+; src/capability_module_plugin.h (which this file was hand-kept in sync with) and
+; dropped `initLogos`, the legacy Qt init hook no universal module has. The
+; method list below is therefore the pre-migration surface, not today's.
 ;
-; Hand-maintained: keep in sync with src/capability_module_plugin.h. Every
-; Q_INVOKABLE there must appear here, with the same name, arity and types, or
-; the Windows build will ship a typed API that disagrees with the Qt metaobject
-; the plugin actually exposes at runtime.
-;
-;   Q_INVOKABLE void initLogos(LogosAPI*)                        -> any / void
+;   Q_INVOKABLE void initLogos(LogosAPI*)                        -> any / void   (GONE)
 ;   Q_INVOKABLE QString requestModule(QString, QString)          -> tstr
 ;   Q_INVOKABLE bool registerRestriction(QString, QString, QStringList)
 module capability_module {

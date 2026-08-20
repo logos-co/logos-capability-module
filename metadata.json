@@ -12,16 +12,30 @@
     "module_coordination",
     "permission_management"
   ],
-
   "nix": {
     "packages": {
-      "build": [],
-      "runtime": []
+      "build": [
+        "boost"
+      ],
+      "runtime": [
+        "boost"
+      ]
     },
     "external_libraries": [],
     "cmake": {
-      "find_packages": [],
+      "find_packages": [
+        "Boost"
+      ],
       "extra_sources": []
     }
+  },
+  "interface": "universal",
+  "host_services": [
+    "token_registry",
+    "token_delivery"
+  ],
+  "codegen": {
+    "impl_class": "CapabilityModuleImpl",
+    "impl_header": "src/capability_module_impl.h"
   }
 }
