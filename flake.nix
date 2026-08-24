@@ -19,6 +19,12 @@
     # the files above are the test, not ancestry.
     logos-module-builder.url = "github:logos-co/logos-module-builder";
 
+    # Pin cpp-sdk at master so this module sees logos_caller.h (cpp-sdk#151 is
+    # on master; module-builder's lock still trails). The builder already
+    # threads this input into qt-sdk / plugin-qt.
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    logos-module-builder.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+
     # Cut the builder's logos-standalone-app input, and with it a dependency
     # cycle that this module sits inside:
     #
