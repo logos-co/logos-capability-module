@@ -28,7 +28,7 @@
     # already publish.
     logos-protocol.url = "github:logos-co/logos-protocol";
     logos-lidl.url = "github:logos-co/logos-lidl";
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/call-caller-raii";
     logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
 

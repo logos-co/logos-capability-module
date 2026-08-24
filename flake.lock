@@ -16,15 +16,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1787605334,
-        "narHash": "sha256-S+lAYBjIncdrexm2jMApnLTplM7SjPuOo0tsKMxacxY=",
+        "lastModified": 1787607173,
+        "narHash": "sha256-d5tC+V3I7GjeU7rXjz6jFjf/hRPPAyYSUQG0ULGNmrE=",
         "owner": "logos-co",
         "repo": "logos-cpp-sdk",
-        "rev": "937f17ed018fb942ad6902456e871ce5e8b9becc",
+        "rev": "5c8b4da244beb3de01ac9aff5786faf8093a03c2",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
+        "ref": "feat/call-caller-raii",
         "repo": "logos-cpp-sdk",
         "type": "github"
       }
