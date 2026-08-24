@@ -12,7 +12,7 @@
 //
 // and the HOST grants them, bound to this module's verified name. Ungranted,
 // every gated call fails closed — and note that is not a partial degradation:
-// the known-caller check below reads the token registry, so an ungranted
+// looking up the target token reads the token registry, so an ungranted
 // capability_module refuses EVERY requestModule.
 //
 // No Qt: this is a plain C++ class the generator turns into a module. The Qt
@@ -35,9 +35,10 @@ public:
     CapabilityModuleImpl() = default;
     ~CapabilityModuleImpl() = default;
 
-    // Mint a token letting `fromModuleName` call `moduleName`, push it to the
-    // target, and return it. Empty string on any refusal — an unknown caller,
-    // an unknown target, a policy denial, or an unreachable target.
+    // Mint a token letting the RPC caller (logos::currentCaller) call
+    // `moduleName`, push it to the target, and return it. `fromModuleName` is
+    // leftover ABI and is not used for identity. Empty string on any refusal —
+    // unnamed caller, unknown target, policy denial, or an unreachable target.
     std::string requestModule(const std::string& fromModuleName,
                               const std::string& moduleName);
 
