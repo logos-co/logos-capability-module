@@ -31,7 +31,7 @@
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
-    logos-test-framework.url = "github:logos-co/logos-test-framework/feat/call-caller-in-logos-test";
+    logos-test-framework.url = "github:logos-co/logos-test-framework";
 
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
     logos-cpp-sdk.inputs.logos-lidl.follows = "logos-lidl";

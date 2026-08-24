@@ -1122,16 +1122,15 @@
         ]
       },
       "locked": {
-        "lastModified": 1787607633,
+        "lastModified": 1787614290,
         "narHash": "sha256-NUpZo9F9MbUaxYIdeI4u+Mp4e33DaV8dCK80hgrJ9Dg=",
         "owner": "logos-co",
         "repo": "logos-test-framework",
-        "rev": "2368086ad34468fc546150078529c60eba7b0b8c",
+        "rev": "31008b6a5622bc4acce4b1e4e9bfc035e1d4f50f",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
-        "ref": "feat/call-caller-in-logos-test",
         "repo": "logos-test-framework",
         "type": "github"
       }
