@@ -37,8 +37,9 @@ public:
 
     // Mint a token letting the RPC caller (logos::currentCaller) call
     // `moduleName`, push it to the target, and return it. `fromModuleName` is
-    // leftover ABI and is not used for identity. Empty string on any refusal —
-    // unnamed caller, unknown target, policy denial, or an unreachable target.
+    // leftover ABI: ignored when a caller is on the dispatch, used as a
+    // fallback when the host/mock has not pushed one (old logoscore, unit
+    // tests that construct the impl directly). Empty string on any refusal.
     std::string requestModule(const std::string& fromModuleName,
                               const std::string& moduleName);
 

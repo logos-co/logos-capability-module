@@ -46,7 +46,7 @@ API — there is no dispatch marker; the generator derives the contract from the
 
 | Method | Purpose |
 |--------|---------|
-| `requestModule(fromModuleName, moduleName) → std::string` | Generates a fresh token for the **RPC caller** (`logos::currentCaller`) to call `moduleName`, informs the target, and returns it. `fromModuleName` is leftover ABI and is not used for identity. Returns an **empty string** on any refusal — unnamed caller, unknown target, policy denial, or an unreachable target. |
+| `requestModule(fromModuleName, moduleName) → std::string` | Generates a fresh token for the **RPC caller** (`logos::currentCaller`) to call `moduleName`, informs the target, and returns it. `fromModuleName` is leftover ABI: ignored when a caller is on the dispatch, used as a fallback when the host has not pushed one (old logoscore, mocks). Returns an **empty string** on any refusal — unnamed caller, unknown target, policy denial, or an unreachable target. |
 | `registerRestriction(authToken, targetModule, allowedCallers) → bool` | Records an allowed-caller list for `targetModule`. Refused unless `authToken` is the trusted core/capability channel. |
 
 Typed events would be declared under a `logos_events:` section. The module currently emits none.
@@ -98,8 +98,9 @@ library now, and making one a Qt plugin is a downstream hosting step.
   impl cannot use.) It authenticates with `tokenFor(target)` — the token this image holds
   under the **target's** name — not with anything belonging to the requester.
 - **Central coordination**: requests are **not** always granted. Identity is
-  `logos::currentCaller()` (the document the host pushed for this dispatch), not
-  `fromModuleName`. Ungranted `token_registry` still refuses every request because the
+  `logos::currentCaller()` when the host pushed a caller document for this
+  dispatch; otherwise `fromModuleName` is the leftover-ABI fallback (old
+  logoscore and in-process mocks). Ungranted `token_registry` still refuses every request because the
   target lookup reads the registry. The target must be loaded, and a target with a
   registered restriction must list the token-bound caller. A target with **no**
   registered restriction is still unrestricted: that last gate is fail-OPEN by design
@@ -108,9 +109,11 @@ library now, and making one a Qt plugin is a downstream hosting step.
 ### 4.3 Token Flow
 
 1. Caller invokes `requestModule(from, target)`. `from` is leftover ABI.
-2. The dispatch must carry a named caller (`logos::currentCaller`: host → `core`, or a
-   module name). `target` must be non-empty and hold a token, and the access policy must
-   allow the token-bound caller. Any refusal returns an empty string and nothing is minted.
+2. If the dispatch carries a named caller (`logos::currentCaller`: host → `core`,
+   or a module name), that name is used and `from` is ignored. If not, `from` is
+   the fallback identity. `target` must be non-empty and hold a token, and the
+   access policy must allow the bound caller. Any refusal returns an empty
+   string and nothing is minted.
 3. The auth token used for the push comes from `logos::host::tokenFor(target)` — the token
    this image holds under the target's name. (Was a direct `TokenManager` lookup; the Qt-free
    impl goes through the `logos_host_services.h` veneer instead. Note `tokenFor` wraps

@@ -80,16 +80,27 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
         callerName = "core";
     } else if (caller.isModule() && !caller.name.empty()) {
         callerName = caller.name;
+    } else if (!fromModuleName.empty()) {
+        // No caller on this dispatch: old host, mock, or a logoscore that
+        // has not yet pushed logos_module_set_call_caller. Trusting the
+        // leftover ABI is the same contract master had; once the host
+        // names the caller, fromModuleName is ignored (and cannot spoof).
+        warn("[capability_module] no caller on this dispatch; falling back to "
+             "fromModuleName='%s' for target '%s'\n",
+             fromModuleName, moduleName);
+        callerName = fromModuleName;
     } else {
         warn("[capability_module] rejecting request for '%s': no named caller on "
              "this dispatch (fromModuleName='%s')\n",
              moduleName, fromModuleName);
         return {};
     }
-    if (!fromModuleName.empty() && fromModuleName != callerName) {
-        warn("[capability_module] ignoring leftover fromModuleName='%s' "
-             "(token-bound caller is '%s')\n",
-             fromModuleName, callerName);
+    if (caller.isHost() || caller.isModule()) {
+        if (!fromModuleName.empty() && fromModuleName != callerName) {
+            warn("[capability_module] ignoring leftover fromModuleName='%s' "
+                 "(token-bound caller is '%s')\n",
+                 fromModuleName, callerName);
+        }
     }
 
     // token_registry remains load-bearing: tokenFor() below reads the registry,

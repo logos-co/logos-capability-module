@@ -259,10 +259,24 @@ LOGOS_TEST(requestModule_returns_empty_when_token_delivery_ungranted) {
     LOGOS_ASSERT_TRUE(token.empty());
 }
 
-// Direct construction has no logos_module_set_call_caller push, which is the
-// production path. An unnamed dispatch must refuse even when fromModuleName
-// looks like a loaded module.
+// Direct construction has no logos_module_set_call_caller push. With an
+// empty leftover ABI and no caller, refuse. A filled fromModuleName is the
+// old-host fallback and is covered below.
 LOGOS_TEST(requestModule_rejects_unnamed_caller) {
+    CapabilityFixture fixture;
+    seedModule("requester_module");
+    seedModule("target_module");
+
+    CapabilityModuleImpl impl;
+
+    const std::string token = impl.requestModule("", "target_module");
+
+    LOGOS_ASSERT_TRUE(token.empty());
+}
+
+LOGOS_TEST(requestModule_falls_back_to_fromModuleName_without_caller) {
+    // Old logoscore / mock / doctest: no caller document on the dispatch,
+    // only the leftover ABI. Same grant as master before this PR.
     CapabilityFixture fixture;
     seedModule("requester_module");
     seedModule("target_module");
@@ -271,7 +285,7 @@ LOGOS_TEST(requestModule_rejects_unnamed_caller) {
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
-    LOGOS_ASSERT_TRUE(token.empty());
+    LOGOS_ASSERT(isUuid(token));
 }
 
 LOGOS_TEST(requestModule_treats_host_as_core) {

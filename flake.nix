@@ -19,11 +19,33 @@
     # the files above are the test, not ancestry.
     logos-module-builder.url = "github:logos-co/logos-module-builder";
 
-    # Pin cpp-sdk at master so this module sees logos_caller.h (cpp-sdk#151 is
-    # on master; module-builder's lock still trails). The builder already
-    # threads this input into qt-sdk / plugin-qt.
+    # requestModule reads logos::currentCaller() (cpp-sdk) and the generated
+    # plugin glue pushes that document (plugin-qt#26 / caller glue). The
+    # builder lock still trails that closure: cpp-sdk 95d7b3 has no
+    # logos_caller.h, qt-sdk 19c844 compiles lidl_compat.h without lidl's
+    # identity.hpp on the include path, plugin-qt 9b2c64e never calls
+    # logos_module_set_call_caller. Follow the same master tips the SDKs
+    # already publish.
+    logos-protocol.url = "github:logos-co/logos-protocol";
+    logos-lidl.url = "github:logos-co/logos-lidl";
     logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
+    logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
+    logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
+
+    logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    logos-cpp-sdk.inputs.logos-lidl.follows = "logos-lidl";
+    logos-qt-sdk.inputs.logos-protocol.follows = "logos-protocol";
+    logos-qt-sdk.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    logos-qt-sdk.inputs.logos-lidl.follows = "logos-lidl";
+    logos-qt-sdk.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
+    logos-plugin-qt.inputs.logos-protocol.follows = "logos-protocol";
+    logos-plugin-qt.inputs.logos-lidl.follows = "logos-lidl";
+
+    logos-module-builder.inputs.logos-protocol.follows = "logos-protocol";
     logos-module-builder.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    logos-module-builder.inputs.logos-qt-sdk.follows = "logos-qt-sdk";
+    logos-module-builder.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
+    logos-module-builder.inputs.logos-plugin-core.follows = "logos-plugin-qt";
 
     # Cut the builder's logos-standalone-app input, and with it a dependency
     # cycle that this module sits inside:
