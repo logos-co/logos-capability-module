@@ -28,9 +28,10 @@
     # already publish.
     logos-protocol.url = "github:logos-co/logos-protocol";
     logos-lidl.url = "github:logos-co/logos-lidl";
-    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk/feat/call-caller-raii";
+    logos-cpp-sdk.url = "github:logos-co/logos-cpp-sdk";
     logos-qt-sdk.url = "github:logos-co/logos-qt-sdk";
     logos-plugin-qt.url = "github:logos-co/logos-plugin-qt";
+    logos-test-framework.url = "github:logos-co/logos-test-framework/feat/call-caller-in-logos-test";
 
     logos-cpp-sdk.inputs.logos-protocol.follows = "logos-protocol";
     logos-cpp-sdk.inputs.logos-lidl.follows = "logos-lidl";
@@ -46,6 +47,14 @@
     logos-module-builder.inputs.logos-qt-sdk.follows = "logos-qt-sdk";
     logos-module-builder.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
     logos-module-builder.inputs.logos-plugin-core.follows = "logos-plugin-qt";
+    logos-module-builder.inputs.logos-test-framework.follows = "logos-test-framework";
+
+    # Same SDK/runtime as the module: CallCaller is compiled against
+    # logos_caller.h from THIS cpp-sdk, not the test-framework lock's older pin.
+    logos-test-framework.inputs.logos-cpp-sdk.follows = "logos-cpp-sdk";
+    logos-test-framework.inputs.logos-protocol.follows = "logos-protocol";
+    logos-test-framework.inputs.logos-plugin-qt.follows = "logos-plugin-qt";
+    logos-test-framework.inputs.logos-qt-sdk.follows = "logos-qt-sdk";
 
     # Cut the builder's logos-standalone-app input, and with it a dependency
     # cycle that this module sits inside:

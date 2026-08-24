@@ -46,8 +46,9 @@
 //
 // requestModule fails closed. Identity is logos::currentCaller() (the document
 // the host pushed for this dispatch), not fromModuleName. Direct unit tests
-// wrap calls with logos::CallCaller — production RPC glue does that via
-// logos_module_set_call_caller. An unnamed dispatch, an empty target, a
+// wrap calls with logos::CallCaller (from logos_test.h) — production RPC
+// glue does that via logos_module_set_call_caller. An unnamed dispatch, an
+// empty target, a
 // never-loaded TARGET, or a policy miss yields an empty result and no token
 // is minted. Spoofing fromModuleName cannot impersonate another loaded module.
 //
@@ -71,7 +72,6 @@
 #include <logos_test.h>
 #include <logos_mock.h>      // LogosMockSetup: LogosMode::Mock + token-store reset
 #include <logos_protocol.h>  // lp_grant_host_services, lp_token_save, lp_set_mode, LP_OK
-#include <logos_caller.h>    // logos::CallCaller — same stack as RPC glue
 
 #include "capability_module_impl.h"
 
