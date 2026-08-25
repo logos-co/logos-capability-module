@@ -503,6 +503,15 @@ sections:
       that hosts it). Overriding both pins the whole capability layer to this
       commit.
 
+      `requestModule` names the caller from `logos::currentCaller()`, which is
+      filled only when the **host** opens a `CallerScope` (protocol 0.8) and the
+      generated glue pushes it (`logos-plugin-qt` `currentCallerJson` /
+      `logos_module_set_call_caller`). `logos-logoscore-cli`'s lock still has
+      protocol `f4407ff` (no scope) and plugin-qt `1aa3e31` (no pull). Overriding
+      those — and cpp-sdk / qt-sdk so the CLI process is one stack — is the
+      same identity path this module uses, not a second one in the handler.
+      Drop the extra overrides once logoscore-cli relocks onto that stack.
+
       > Each override URL carries a `{release}` placeholder the doc-test runner
       > expands to a concrete ref: locally that is this `logos-capability-module`
       > checkout's `HEAD` (see `run.sh`); in CI it is the commit being tested.
@@ -513,11 +522,23 @@ sections:
           nix build 'github:logos-co/logos-logoscore-cli' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module{release}' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module{release}' \
+            --override-input logos-protocol 'github:logos-co/logos-protocol' \
+            --override-input logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
+            --override-input logos-qt-sdk 'github:logos-co/logos-qt-sdk' \
+            --override-input logos-qt-sdk/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
+            --override-input logos-liblogos/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
+            --override-input logos-liblogos/logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
             --out-link ./logos
         code_block: |
           nix build 'github:logos-co/logos-logoscore-cli' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module' \
+            --override-input logos-protocol 'github:logos-co/logos-protocol' \
+            --override-input logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
+            --override-input logos-qt-sdk 'github:logos-co/logos-qt-sdk' \
+            --override-input logos-qt-sdk/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
+            --override-input logos-liblogos/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
+            --override-input logos-liblogos/logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
             --out-link ./logos
         check_file: "logos/bin/logoscore"
         post_text: |

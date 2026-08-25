@@ -33,9 +33,11 @@ SPECS=(
 # Build the doc-test against THIS repo's current commit rather than the latest
 # published flake. The spec overrides `logos-capability-module` (in both the
 # logos-logoscore-cli root and its logos-liblogos sub-input) with
-# `github:logos-co/logos-capability-module{release}`, and the pin below makes
-# {release} expand to $COMMIT — so the capability layer the runtime loads is built
-# from exactly what's checked out here. Override by exporting COMMIT (e.g. a tag),
+# `github:logos-co/logos-capability-module{release}`, and also overrides the
+# host identity stack (protocol, plugin-qt, cpp-sdk, qt-sdk) onto master so
+# `currentCaller()` is actually filled. The pin below makes {release} expand to
+# $COMMIT — so the capability layer the runtime loads is built from exactly
+# what's checked out here. Override by exporting COMMIT (e.g. a tag),
 # or set COMMIT="" to fall back to latest master.
 #
 # Note: nix fetches the commit from the GitHub remote, so $COMMIT must be pushed
