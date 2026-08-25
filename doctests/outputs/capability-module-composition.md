@@ -504,6 +504,11 @@ plugin the daemon loads at boot) and inside `logos-liblogos` (the runtime
 that hosts it). Overriding both pins the whole capability layer to this
 commit.
 
+These are deliberately the only overrides. The caller-aware host stack is
+merged and logoscore resolves it through its normal locks; a temporary
+liblogos/SDK override would mask the cross-package compatibility this
+doc-test is meant to exercise.
+
 > Each override URL carries a `` placeholder the doc-test runner
 > expands to a concrete ref: locally that is this `logos-capability-module`
 > checkout's `HEAD` (see `run.sh`); in CI it is the commit being tested.
@@ -667,7 +672,13 @@ sleep 1
 logoscore call orchestrator_module lastGreetedEvent
 ```
 
-### 5.12 Stop the daemon
+### 5.12 Dump the daemon log
+
+```bash
+cat logs.txt || true
+```
+
+### 5.13 Stop the daemon
 
 ```bash
 logoscore stop
@@ -677,7 +688,7 @@ logoscore stop
 sleep 2
 ```
 
-### 5.13 Confirm the daemon has stopped
+### 5.14 Confirm the daemon has stopped
 
 ```bash
 logoscore status
