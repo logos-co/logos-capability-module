@@ -34,8 +34,9 @@ SPECS=(
 # published flake. The spec overrides `logos-capability-module` (in both the
 # logos-logoscore-cli root and its logos-liblogos sub-input) with
 # `github:logos-co/logos-capability-module{release}`, and also overrides the
-# host identity stack (protocol, plugin-qt, cpp-sdk, qt-sdk) onto master so
-# `currentCaller()` is actually filled. The pin below makes {release} expand to
+# host identity stack: logos-liblogos#186 (protocol 0.8 + plugin-qt caller glue
+# inside logos_host), plus protocol/cpp-sdk/qt-sdk on the logoscore-cli root so
+# the CLI process matches. The pin below makes {release} expand to
 # $COMMIT — so the capability layer the runtime loads is built from exactly
 # what's checked out here. Override by exporting COMMIT (e.g. a tag),
 # or set COMMIT="" to fall back to latest master.
