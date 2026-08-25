@@ -503,6 +503,22 @@ sections:
       that hosts it). Overriding both pins the whole capability layer to this
       commit.
 
+      `requestModule` names the caller from `logos::currentCaller()`, which is
+      filled only when the **host process** (`logos_host`, from
+      `logos-module-loader-qt` via liblogos) opens a `CallerScope` and the
+      generated glue pulls `currentCallerJson`. Overriding plugin-qt on
+      logoscore-cli's *root* qt-sdk does not rebuild that binary:
+      `logos-logoscore-cli` does not `follows` plugin-qt/qt-sdk into liblogos,
+      so `logos_host` stayed on plugin-qt `1aa3e31`. Pin liblogos to
+      [logos-liblogos#186](https://github.com/logos-co/logos-liblogos/pull/186)
+      (`chore/protocol-0.8-plugin-qt-master`) so the host, protocol 0.8, and
+      plugin-qt `#26` move together. Drop that pin when #186 is on master and
+      logoscore-cli has relocked.
+
+      Root `logos-protocol` is still overridden onto master because logoscore-cli
+      `follows` that input into liblogos — leaving the CLI lock's `f4407ff`
+      would compile the new plugin-qt against a protocol with no CallerScope.
+
       > Each override URL carries a `{release}` placeholder the doc-test runner
       > expands to a concrete ref: locally that is this `logos-capability-module`
       > checkout's `HEAD` (see `run.sh`); in CI it is the commit being tested.
@@ -512,12 +528,22 @@ sections:
         run: |
           nix build 'github:logos-co/logos-logoscore-cli' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module{release}' \
+            --override-input logos-liblogos 'github:logos-co/logos-liblogos/chore/protocol-0.8-plugin-qt-master' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module{release}' \
+            --override-input logos-protocol 'github:logos-co/logos-protocol' \
+            --override-input logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
+            --override-input logos-qt-sdk 'github:logos-co/logos-qt-sdk' \
+            --override-input logos-qt-sdk/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
             --out-link ./logos
         code_block: |
           nix build 'github:logos-co/logos-logoscore-cli' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module' \
+            --override-input logos-liblogos 'github:logos-co/logos-liblogos/chore/protocol-0.8-plugin-qt-master' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module' \
+            --override-input logos-protocol 'github:logos-co/logos-protocol' \
+            --override-input logos-cpp-sdk 'github:logos-co/logos-cpp-sdk' \
+            --override-input logos-qt-sdk 'github:logos-co/logos-qt-sdk' \
+            --override-input logos-qt-sdk/logos-plugin-qt 'github:logos-co/logos-plugin-qt' \
             --out-link ./logos
         check_file: "logos/bin/logoscore"
         post_text: |
@@ -658,6 +684,9 @@ sections:
         code_block: "logoscore call orchestrator_module lastGreetedEvent"
         expect_contains:
           - '"result":"Hello, Events!"'
+
+      - title: "Dump the daemon log"
+        run: "cat logs.txt || true"
 
       - title: "Stop the daemon"
         run: "./logos/bin/logoscore stop"

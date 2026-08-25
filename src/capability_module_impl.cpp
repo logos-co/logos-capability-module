@@ -4,6 +4,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
+#include <logos_caller.h>
 #include <logos_host_services.h>
 #include <logos_protocol.h>
 
@@ -59,36 +60,48 @@ constexpr int kTokenPushTimeoutMs = 3000;
 std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleName,
                                                 const std::string& moduleName)
 {
-    if (fromModuleName.empty() || moduleName.empty()) {
-        warn("[capability_module] rejecting empty module name (from='%s' target='%s')\n",
-             fromModuleName, moduleName);
-        return {};
-    }
-
-    // Known-caller gate. The requesting identity must be one this image has a
-    // token for; fail closed on an unknown name rather than mint a token for a
-    // self-asserted identity that was never loaded.
-    //
-    // This reads the token REGISTRY, so it is the call that makes the
-    // "token_registry" grant load-bearing: ungranted, tokenKeys() returns empty
-    // and every request is refused. That is the correct fail-closed direction,
-    // but it means a missing grant looks exactly like "nothing is loaded" —
-    // hence the explicit status check rather than an `empty()` test.
-    logos::host::Status keysStatus;
-    const std::vector<std::string> known = logos::host::tokenKeys(&keysStatus);
-    if (keysStatus.ungranted()) {
-        warn("[capability_module] REFUSING '%s': this module was not granted the "
-             "token_registry host service, so it cannot verify any caller\n",
+    // Target emptiness is checked first so a missing name cannot be papered
+    // over by a well-formed caller identity (or vice versa).
+    if (moduleName.empty()) {
+        warn("[capability_module] rejecting empty target module name (from='%s')\n",
              fromModuleName);
         return {};
     }
-    bool callerKnown = false;
-    for (const std::string& k : known) {
-        if (k == fromModuleName) { callerKnown = true; break; }
+
+    // Identity comes from the RPC caller document the host pushed into this
+    // image (logos_module_set_call_caller / logos::currentCaller), not from
+    // `fromModuleName`. That argument is leftover ABI: any loaded allowlisted
+    // name could be written there by the caller. Host maps to "core" (rule 5:
+    // the host arm carries no name). Unnamed / unknown / derived / operator
+    // refuse — those are not module identities this method can mint for.
+    const logos::LogosCaller caller = logos::currentCaller();
+    std::string callerName;
+    if (caller.isHost()) {
+        callerName = "core";
+    } else if (caller.isModule() && !caller.name.empty()) {
+        callerName = caller.name;
+    } else {
+        warn("[capability_module] rejecting request for '%s': no named caller on "
+             "this dispatch (fromModuleName='%s')\n",
+             moduleName, fromModuleName);
+        return {};
     }
-    if (!callerKnown) {
-        warn("[capability_module] rejecting request from unknown module identity '%s' "
-             "- no token registered for it\n", fromModuleName);
+    if (!fromModuleName.empty() && fromModuleName != callerName) {
+        warn("[capability_module] ignoring leftover fromModuleName='%s' "
+             "(token-bound caller is '%s')\n",
+             fromModuleName, callerName);
+    }
+
+    // token_registry remains load-bearing: tokenFor() below reads the registry,
+    // and an ungranted image must fail closed rather than looking like "the
+    // target is not loaded". The explicit status check (not empty()) is what
+    // distinguishes those two refusals.
+    logos::host::Status keysStatus;
+    (void)logos::host::tokenKeys(&keysStatus);
+    if (keysStatus.ungranted()) {
+        warn("[capability_module] REFUSING '%s': this module was not granted the "
+             "token_registry host service, so it cannot look up the target\n",
+             callerName);
         return {};
     }
 
@@ -109,9 +122,9 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_restrictions.find(moduleName);
-        if (it != m_restrictions.end() && it->second.count(fromModuleName) == 0) {
+        if (it != m_restrictions.end() && it->second.count(callerName) == 0) {
             warn("[capability_module] access policy denies '%s' -> '%s'\n",
-                 fromModuleName, moduleName);
+                 callerName, moduleName);
             return {};
         }
     }
@@ -135,7 +148,7 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
         client.get(),
         /*authToken=*/moduleToken,
         /*originModule=*/moduleName,
-        /*moduleName=*/fromModuleName,
+        /*moduleName=*/callerName,
         /*token=*/authToken,
         kTokenPushTimeoutMs);
 
@@ -145,7 +158,7 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
                  "token_delivery host service, so it cannot push tokens\n", moduleName);
         } else {
             warn("[capability_module] failed to inform '%s' about the token for '%s'\n",
-                 moduleName, fromModuleName);
+                 moduleName, callerName);
         }
         return {};
     }

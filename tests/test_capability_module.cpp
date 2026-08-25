@@ -44,14 +44,13 @@
 //
 // ── Security contract (F-001, CWE-290) ───────────────────────────────────────
 //
-// requestModule fails closed. It refuses to mint a token unless BOTH the
-// requesting identity (fromModuleName) and the target (moduleName) are modules
-// this image already holds a token for — the host seeds one entry per loaded
-// module. An empty, unknown, or never-loaded name yields an empty result and no
-// token is minted. This is defense-in-depth: it blocks spoofing a *non-loaded*
-// identity, but cannot by itself stop a loaded module from presenting *another
-// loaded module's* name — that needs the RPC layer to surface the verified
-// caller token to this method.
+// requestModule fails closed. Identity is logos::currentCaller() (the document
+// the host pushed for this dispatch), not fromModuleName. Direct unit tests
+// wrap calls with logos::CallCaller (from logos_test.h) — production RPC
+// glue does that via logos_module_set_call_caller. An unnamed dispatch, an
+// empty target, a
+// never-loaded TARGET, or a policy miss yields an empty result and no token
+// is minted. Spoofing fromModuleName cannot impersonate another loaded module.
 //
 // Under `universal` there is a second, stronger fail-closed precondition the
 // old Qt shape could not express at all: the host-services grant. Reading the
@@ -148,6 +147,7 @@ LOGOS_TEST(requestModule_returns_uuid_format_token) {
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
@@ -161,6 +161,7 @@ LOGOS_TEST(requestModule_mints_unique_token_per_call) {
     seedModule("target");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester");
 
     std::set<std::string> tokens;
     for (int i = 0; i < 10; ++i) {
@@ -175,12 +176,13 @@ LOGOS_TEST(requestModule_mints_unique_token_per_call) {
 LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
     CapabilityFixture fixture;
     // Seed both the caller and the target — exercises the tokenFor() path for
-    // the target while satisfying the known-caller gate. The literal value
-    // differs from seedModule's to show nothing reads it.
+    // the target. The literal value differs from seedModule's to show nothing
+    // reads it.
     seedModule("requester_module");
     lp_token_save("target_module", "pre-seeded-token");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
@@ -204,6 +206,7 @@ LOGOS_TEST(requestModule_returns_empty_when_host_services_ungranted) {
     seedModule("target");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester");
 
     // Both names are known and the pair is unrestricted: the ONLY thing
     // refusing this request is the missing grant.
@@ -222,6 +225,7 @@ LOGOS_TEST(requestModule_returns_empty_when_token_delivery_ungranted) {
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     // Clears gates 1-5 and mints a token; the push then comes back
     // LP_ERR_UNSUPPORTED, so the minted token is dropped on the floor.
@@ -230,29 +234,44 @@ LOGOS_TEST(requestModule_returns_empty_when_token_delivery_ungranted) {
     LOGOS_ASSERT_TRUE(token.empty());
 }
 
-// These two also assert the CONTRACT rather than one code path, and neither is
-// currently falsifiable by this suite (verified by mutation: disabling the
-// empty-name gate leaves all 18 green).
-//
-//   caller half — shadowed by the known-caller gate: "" is never a key in
-//     tokenKeys(), so the request is refused one gate later either way. Remove
-//     BOTH gates and this test does fail, so the assertion is real.
-//   target half — shadowed twice over, and the deeper shadow is not ours:
-//     it survives even with the empty-name, known-caller and known-target gates
-//     all removed, because lp_client_create("", ...) happens to return nullptr.
-//     That is logos-protocol behaviour with nothing in this repo pinning it. If
-//     it ever accepted an empty target AND the gate below were dropped,
-//     requestModule would mint a token for an empty target and nothing here
-//     would notice.
-LOGOS_TEST(requestModule_rejects_empty_fromModuleName) {
+// Direct construction has no logos_module_set_call_caller push. An unnamed
+// dispatch must refuse even when fromModuleName looks like a loaded module.
+LOGOS_TEST(requestModule_rejects_unnamed_caller) {
     CapabilityFixture fixture;
+    seedModule("requester_module");
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
 
-    const std::string token = impl.requestModule("", "target_module");
+    const std::string token = impl.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT_TRUE(token.empty());
+}
+
+LOGOS_TEST(requestModule_treats_host_as_core) {
+    CapabilityFixture fixture;
+    seedModule("target_module");
+
+    CapabilityModuleImpl impl;
+    const auto host = logos::CallCaller::host();
+
+    const std::string token = impl.requestModule("ignored_leftover", "target_module");
+
+    LOGOS_ASSERT(isUuid(token));
+}
+
+LOGOS_TEST(requestModule_ignores_leftover_fromModuleName) {
+    CapabilityFixture fixture;
+    seedModule("requester_module");
+    seedModule("target_module");
+
+    CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
+
+    // Empty leftover ABI still mints for the token-bound caller.
+    const std::string token = impl.requestModule("", "target_module");
+
+    LOGOS_ASSERT(isUuid(token));
 }
 
 LOGOS_TEST(requestModule_rejects_empty_targetModuleName) {
@@ -260,31 +279,19 @@ LOGOS_TEST(requestModule_rejects_empty_targetModuleName) {
     seedModule("requester_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "");
 
     LOGOS_ASSERT_TRUE(token.empty());
 }
 
-LOGOS_TEST(requestModule_rejects_unknown_fromModuleName) {
-    CapabilityFixture fixture;
-    // Only the target is known; the requesting identity was never loaded.
-    seedModule("target_module");
-
-    CapabilityModuleImpl impl;
-
-    // Spoofing a non-loaded identity must not mint a token.
-    const std::string token = impl.requestModule("spoofed_module", "target_module");
-
-    LOGOS_ASSERT_TRUE(token.empty());
-}
-
 LOGOS_TEST(requestModule_rejects_unknown_target) {
     CapabilityFixture fixture;
-    // Only the caller is known; the target was never loaded.
     seedModule("requester_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "missing_target");
 
@@ -300,6 +307,7 @@ LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
@@ -321,6 +329,7 @@ LOGOS_TEST(requestModule_returns_empty_when_target_is_unreachable) {
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
@@ -379,6 +388,7 @@ LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
     LOGOS_ASSERT_TRUE(impl.registerRestriction(
         kTrustedToken, "package_manager", {"package_manager_ui"}));
 
+    const auto caller = logos::CallCaller::module("package_manager_ui");
     const std::string token = impl.requestModule("package_manager_ui", "package_manager");
 
     LOGOS_ASSERT_FALSE(token.empty());
@@ -395,8 +405,9 @@ LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
 
     impl.registerRestriction(kTrustedToken, "package_manager", {"package_manager_ui"});
 
-    // some_other_module is a known, loaded module (passes the identity gate)
-    // but is not in package_manager's allowed-caller set — must be denied.
+    // some_other_module is a named, loaded module but is not in
+    // package_manager's allowed-caller set — must be denied.
+    const auto caller = logos::CallCaller::module("some_other_module");
     const std::string token = impl.requestModule("some_other_module", "package_manager");
 
     LOGOS_ASSERT_TRUE(token.empty());
@@ -417,6 +428,7 @@ LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
     // Restrict only restricted_target; open_target has no restriction.
     impl.registerRestriction(kTrustedToken, "restricted_target", {"allowed_caller"});
 
+    const auto caller = logos::CallCaller::module("some_module");
     const std::string token = impl.requestModule("some_module", "open_target");
 
     LOGOS_ASSERT_FALSE(token.empty());
@@ -430,6 +442,7 @@ LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
     seedModule("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
@@ -452,6 +465,31 @@ LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
     // old_caller is no longer allowed; new_caller is. The second assertion is
     // what distinguishes "overwritten" from "registerRestriction broke the
     // target for everyone".
-    LOGOS_ASSERT_TRUE(impl.requestModule("old_caller", "target_module").empty());
-    LOGOS_ASSERT_FALSE(impl.requestModule("new_caller", "target_module").empty());
+    {
+        const auto oldCaller = logos::CallCaller::module("old_caller");
+        LOGOS_ASSERT_TRUE(impl.requestModule("old_caller", "target_module").empty());
+    }
+    {
+        const auto newCaller = logos::CallCaller::module("new_caller");
+        LOGOS_ASSERT_FALSE(impl.requestModule("new_caller", "target_module").empty());
+    }
+}
+
+LOGOS_TEST(requestModule_denies_spoofed_fromModuleName) {
+    CapabilityFixture fixture;
+    seedTrustedChannel();
+    seedModule("package_manager_ui");
+    seedModule("package_manager");
+    seedModule("malicious_module");
+
+    CapabilityModuleImpl impl;
+
+    LOGOS_ASSERT_TRUE(impl.registerRestriction(
+        kTrustedToken, "package_manager", {"package_manager_ui"}));
+
+    // Token-bound caller is malicious_module; leftover ABI claims the UI.
+    const auto caller = logos::CallCaller::module("malicious_module");
+    const std::string token = impl.requestModule("package_manager_ui", "package_manager");
+
+    LOGOS_ASSERT_TRUE(token.empty());
 }
