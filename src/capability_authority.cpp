@@ -117,13 +117,14 @@ void CapabilityAuthority::stopRevocations()
 {
     std::thread worker;
     {
+        // Notified under the lock: mingw's condvar can lose a notify after unlock.
         std::lock_guard<std::mutex> lock(m_pushMutex);
         m_pushStopped = true;
         m_revocations.clear();
         worker = std::move(m_pushWorker);
+        m_pushWake.notify_all();
+        m_pushIdle.notify_all();
     }
-    m_pushWake.notify_all();
-    m_pushIdle.notify_all();
     if (worker.joinable()) worker.join();
 }
 
