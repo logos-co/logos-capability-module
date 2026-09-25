@@ -24,4 +24,7 @@ logos_module(
     SOURCES
         src/capability_module_impl.h
         src/capability_module_impl.cpp
+        src/capability_authority.h
+        src/capability_authority.cpp
+        src/logos_capability_engine.h
 )

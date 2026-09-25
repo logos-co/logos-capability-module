@@ -1,4 +1,5 @@
 #include "capability_module_impl.h"
+#include "capability_authority.h"
 
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
@@ -92,22 +93,32 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
              fromModuleName, callerName);
     }
 
-    // token_registry remains load-bearing: tokenFor() below reads the registry,
-    // and an ungranted image must fail closed rather than looking like "the
-    // target is not loaded". The explicit status check (not empty()) is what
-    // distinguishes those two refusals.
-    logos::host::Status keysStatus;
-    (void)logos::host::tokenKeys(&keysStatus);
-    if (keysStatus.ungranted()) {
-        warn("[capability_module] REFUSING '%s': this module was not granted the "
-             "token_registry host service, so it cannot look up the target\n",
-             callerName);
+    // A target the runtime admitted through the engine interface is on record
+    // here; any other is looked up in the registry core pushes to.
+    CapabilityAuthority& authority = CapabilityAuthority::instance();
+    std::string moduleToken = authority.credentialFor(moduleName);
+    const bool onRecord = !moduleToken.empty();
+    if (onRecord && authority.isConsumerOnly(moduleName)) {
+        warn("[capability_module] rejecting request for '%s': it calls, nothing calls it "
+             "(from '%s')\n", moduleName, callerName);
         return {};
+    }
+    if (moduleToken.empty()) {
+        // token_registry remains load-bearing here: an ungranted image must fail
+        // closed rather than look like "the target is not loaded".
+        logos::host::Status keysStatus;
+        (void)logos::host::tokenKeys(&keysStatus);
+        if (keysStatus.ungranted()) {
+            warn("[capability_module] REFUSING '%s': this module was not granted the "
+                 "token_registry host service, so it cannot look up the target\n",
+                 callerName);
+            return {};
+        }
+        moduleToken = logos::host::tokenFor(moduleName);
     }
 
     // Known-target gate: no token for the target means it is not loaded. Don't
     // hand back a token the target would reject anyway.
-    const std::string moduleToken = logos::host::tokenFor(moduleName);
     if (moduleToken.empty()) {
         warn("[capability_module] rejecting request for unknown target '%s' "
              "- no token registered for it\n", moduleName);
@@ -128,11 +139,26 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
             return {};
         }
     }
+    if (!authority.allows(callerName, moduleName)) {
+        warn("[capability_module] access policy denies '%s' -> '%s'\n", callerName, moduleName);
+        return {};
+    }
+
+    // One token per pair while both are on record: a second client stack of the
+    // same identity gets it again instead of overwriting the first's. Retiring
+    // either side forgets it; a registry target, never retired here, gets a new one.
+    if (onRecord) {
+        if (std::string existing = authority.pairToken(callerName, moduleName); !existing.empty())
+            return existing;
+    }
 
     const std::string authToken = mintToken();
+    // Recorded before the push, so a revocation racing it can find it.
+    if (onRecord) authority.recordPair(callerName, moduleName, authToken);
 
     ClientHandle client(moduleName, "capability_module");
     if (!client) {
+        if (onRecord) authority.forgetPair(callerName, moduleName);
         warn("[capability_module] could not create a client for target '%s'\n", moduleName);
         return {};
     }
@@ -153,6 +179,7 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
         kTokenPushTimeoutMs);
 
     if (!pushed) {
+        if (onRecord) authority.forgetPair(callerName, moduleName);
         if (pushed.ungranted()) {
             warn("[capability_module] REFUSING '%s': this module was not granted the "
                  "token_delivery host service, so it cannot push tokens\n", moduleName);
