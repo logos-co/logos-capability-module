@@ -515,10 +515,12 @@ sections:
     steps:
       - title: "Build logoscore with this capability module"
         # This module is a plain one now, which master's liblogos cannot host
-        # (it reads Qt plugin metadata only): until the runtime-control wave
-        # merges, the runtime comes from its branch (logos-logoscore-cli#145).
+        # (it reads Qt plugin metadata only), and it keeps no registry, which
+        # the wave's runtime still expects: until the wave and its cleanup
+        # merge, the runtime comes from the cleanup's branch
+        # (logos-logoscore-cli#146).
         run: |
-          nix build 'github:logos-co/logos-logoscore-cli/feat/core-service-in-liblogos' \
+          nix build 'github:logos-co/logos-logoscore-cli/feat/drop-legacy-mode' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module{release}' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module{release}' \
             --out-link ./logos
