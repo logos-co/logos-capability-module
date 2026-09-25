@@ -1,10 +1,6 @@
 #include "capability_module_impl.h"
 #include "capability_authority.h"
 
-#include <boost/uuid/uuid.hpp>
-#include <boost/uuid/uuid_generators.hpp>
-#include <boost/uuid/uuid_io.hpp>
-
 #include <logos_caller.h>
 #include <logos_host_services.h>
 #include <logos_protocol.h>
@@ -12,18 +8,6 @@
 #include <cstdio>
 
 namespace {
-
-// The minted value IS the auth token, so this is the one place entropy matters.
-// Deliberately the SAME generator the host uses to mint each module's token
-// (logos-liblogos module_manager.cpp), rather than a hand-rolled
-// std::random_device formatter: boost seeds from the platform CSPRNG
-// (/dev/urandom, BCryptGenRandom), whereas std::random_device is permitted to
-// be DETERMINISTIC and historically was on MinGW — which is a live target here.
-std::string mintToken()
-{
-    static boost::uuids::random_generator gen;
-    return boost::uuids::to_string(gen());
-}
 
 // RAII for the per-target client. lp_client_destroy is safe from any thread and
 // defers teardown to the owner thread when needed, so an early return cannot
@@ -93,52 +77,26 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
              fromModuleName, callerName);
     }
 
-    // A target the runtime admitted through the engine interface is on record
-    // here; any other is looked up in the registry core pushes to.
+    // Only an admitted target can be one: its credential authenticates the push
+    // below, and nothing else knows it.
     CapabilityAuthority& authority = CapabilityAuthority::instance();
-    std::string moduleToken = authority.credentialFor(moduleName);
-    const bool onRecord = !moduleToken.empty();
-    if (onRecord && authority.isConsumerOnly(moduleName)) {
+    const std::string moduleToken = authority.credentialFor(moduleName);
+    if (moduleToken.empty()) {
+        warn("[capability_module] rejecting request for '%s': the runtime has not "
+             "admitted it (from '%s')\n", moduleName, callerName);
+        return {};
+    }
+    if (authority.isConsumerOnly(moduleName)) {
         warn("[capability_module] rejecting request for '%s': it calls, nothing calls it "
              "(from '%s')\n", moduleName, callerName);
         return {};
     }
-    if (moduleToken.empty()) {
-        // token_registry remains load-bearing here: an ungranted image must fail
-        // closed rather than look like "the target is not loaded".
-        logos::host::Status keysStatus;
-        (void)logos::host::tokenKeys(&keysStatus);
-        if (keysStatus.ungranted()) {
-            warn("[capability_module] REFUSING '%s': this module was not granted the "
-                 "token_registry host service, so it cannot look up the target\n",
-                 callerName);
-            return {};
-        }
-        moduleToken = logos::host::tokenFor(moduleName);
-    }
 
-    // Known-target gate: no token for the target means it is not loaded. Don't
-    // hand back a token the target would reject anyway.
-    if (moduleToken.empty()) {
-        warn("[capability_module] rejecting request for unknown target '%s' "
-             "- no token registered for it\n", moduleName);
-        return {};
-    }
-
-    // Access-policy gate.
+    // Access-policy gate, fed by the runtime through the engine interface.
     //
-    // TODO(access-policy): still fail-OPEN — a target with no registered
-    // restriction is unrestricted. Intentional for back-compat during rollout;
-    // the end state is deny-by-default once every deployment ships a policy.
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_restrictions.find(moduleName);
-        if (it != m_restrictions.end() && it->second.count(callerName) == 0) {
-            warn("[capability_module] access policy denies '%s' -> '%s'\n",
-                 callerName, moduleName);
-            return {};
-        }
-    }
+    // TODO(access-policy): still fail-OPEN — a target with no restriction is
+    // unrestricted. Intentional for back-compat during rollout; the end state
+    // is deny-by-default once every deployment ships a policy.
     if (!authority.allows(callerName, moduleName)) {
         warn("[capability_module] access policy denies '%s' -> '%s'\n", callerName, moduleName);
         return {};
@@ -146,19 +104,17 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
 
     // One token per pair while both are on record: a second client stack of the
     // same identity gets it again instead of overwriting the first's. Retiring
-    // either side forgets it; a registry target, never retired here, gets a new one.
-    if (onRecord) {
-        if (std::string existing = authority.pairToken(callerName, moduleName); !existing.empty())
-            return existing;
-    }
+    // either side forgets it.
+    if (std::string existing = authority.pairToken(callerName, moduleName); !existing.empty())
+        return existing;
 
-    const std::string authToken = mintToken();
+    const std::string authToken = CapabilityAuthority::mintToken();
     // Recorded before the push, so a revocation racing it can find it.
-    if (onRecord) authority.recordPair(callerName, moduleName, authToken);
+    authority.recordPair(callerName, moduleName, authToken);
 
     ClientHandle client(moduleName, "capability_module");
     if (!client) {
-        if (onRecord) authority.forgetPair(callerName, moduleName);
+        authority.forgetPair(callerName, moduleName);
         warn("[capability_module] could not create a client for target '%s'\n", moduleName);
         return {};
     }
@@ -179,7 +135,7 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
         kTokenPushTimeoutMs);
 
     if (!pushed) {
-        if (onRecord) authority.forgetPair(callerName, moduleName);
+        authority.forgetPair(callerName, moduleName);
         if (pushed.ungranted()) {
             warn("[capability_module] REFUSING '%s': this module was not granted the "
                  "token_delivery host service, so it cannot push tokens\n", moduleName);
@@ -191,43 +147,6 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
     }
 
     return authToken;
-}
-
-bool CapabilityModuleImpl::registerRestriction(const std::string& authToken,
-                                               const std::string& targetModule,
-                                               const std::vector<std::string>& allowedCallers)
-{
-    // Trusted-channel gate: only core (or this module) may rewrite the policy.
-    // Both hold this module's auth token; a peer knows only its own. The
-    // generic authorization that fronts this method accepts ANY issued token,
-    // which would otherwise let any module rewrite the policy.
-    //
-    // constantTimeEquals, not ==: comparing a secret with == leaks the length
-    // of the matching prefix through timing.
-    const std::string coreToken = logos::host::tokenFor("core");
-    const std::string capToken  = logos::host::tokenFor("capability_module");
-    const bool callerIsTrusted =
-        (!coreToken.empty() && logos::host::constantTimeEquals(authToken, coreToken)) ||
-        (!capToken.empty()  && logos::host::constantTimeEquals(authToken, capToken));
-    if (authToken.empty() || !callerIsTrusted) {
-        warn("[capability_module] rejecting restriction for '%s' - caller is not the "
-             "trusted core channel\n", targetModule);
-        return false;
-    }
-
-    if (targetModule.empty()) {
-        warn("[capability_module] rejecting empty target module%s\n", std::string());
-        return false;
-    }
-
-    // Overwrite any previous restriction — core is the single source of truth
-    // and re-registers the full set each boot.
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_restrictions[targetModule] =
-            std::set<std::string>(allowedCallers.begin(), allowedCallers.end());
-    }
-    return true;
 }
 
 LogosShutdown CapabilityModuleImpl::aboutToUnload()
