@@ -2,7 +2,7 @@
   description = "Logos Capability Module - Coordinates permissions between modules";
 
   inputs = {
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/feat/windows-unit-tests";
 
     # Cut the builder's logos-standalone-app input, and with it a dependency
     # cycle that this module sits inside:
