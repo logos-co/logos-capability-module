@@ -229,3 +229,9 @@ bool CapabilityModuleImpl::registerRestriction(const std::string& authToken,
     }
     return true;
 }
+
+LogosShutdown CapabilityModuleImpl::aboutToUnload()
+{
+    CapabilityAuthority::instance().stopRevocations();
+    return LogosShutdown::Synchronous;
+}

@@ -49,6 +49,9 @@ public:
                              const std::string& targetModule,
                              const std::vector<std::string>& allowedCallers);
 
+    // Stops the revocation worker: nothing is pushed once the module goes.
+    LogosShutdown aboutToUnload() override;
+
 private:
     // target -> callers permitted to reach it. A target absent from the map is
     // unrestricted; see the fail-open note in the .cpp.

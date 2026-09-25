@@ -10,7 +10,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <mutex>
 #include <string>
+#include <vector>
 
 extern "C" const logos_capability_engine_v1* logos_module_capability_engine_v1();
 
@@ -41,13 +44,45 @@ Admitted admit(const std::string& name, const char* kind = "module")
     return admitted;
 }
 
-// Every test starts from an empty store: retire whatever a test admitted.
+std::mutex g_pushedMutex;
+std::vector<CapabilityAuthority::Revocation> g_pushed;
+
+// The revocations pushed so far, recorded rather than dialled.
+std::vector<CapabilityAuthority::Revocation> pushed()
+{
+    CapabilityAuthority::instance().drainRevocations();
+    std::lock_guard<std::mutex> lock(g_pushedMutex);
+    return g_pushed;
+}
+
+std::string digestOf(const std::string& token)
+{
+    char* digest = lp_token_digest(token.c_str());
+    std::string value = digest ? digest : "";
+    lp_string_free(digest);
+    return value;
+}
+
+// Every test starts from an empty store: retire whatever a test admitted, and
+// let no revocation outlive the test.
 struct Retiring {
     std::vector<Admitted> admitted;
+    Retiring()
+    {
+        CapabilityAuthority::instance().setRevocationPush(
+            [](const CapabilityAuthority::Revocation& revocation, const std::string&) {
+                std::lock_guard<std::mutex> lock(g_pushedMutex);
+                g_pushed.push_back(revocation);
+                return LP_OK;
+            });
+    }
     ~Retiring()
     {
         for (const auto& a : admitted) engine().retire(a.name.c_str(), a.generation);
         engine().set_restrictions("{}");
+        CapabilityAuthority::instance().drainRevocations();
+        std::lock_guard<std::mutex> lock(g_pushedMutex);
+        g_pushed.clear();
     }
     Admitted add(const std::string& name, const char* kind = "module")
     {
@@ -128,6 +163,11 @@ LOGOS_TEST(retiring_the_caller_forgets_its_pairs) {
     }
     LOGOS_ASSERT_EQ(engine().retire("auth_caller_r", callerId.generation), 0);
     store.admitted.erase(store.admitted.begin());
+    const auto revocations = pushed();
+    LOGOS_ASSERT_EQ(revocations.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(revocations[0].target, std::string("auth_target_r"));
+    LOGOS_ASSERT_EQ(revocations[0].caller, std::string("auth_caller_r"));
+    LOGOS_ASSERT_EQ(revocations[0].digest, digestOf(first));
     store.add("auth_caller_r");
     const auto caller = logos::CallCaller::module("auth_caller_r");
     const std::string second = impl.requestModule("", "auth_target_r");
@@ -178,4 +218,22 @@ LOGOS_TEST(an_operator_pair_is_granted_for_an_admitted_target) {
     LOGOS_ASSERT_EQ(take(engine().grant_operator_pair("alice", "auth_op_target")), token);
     LOGOS_ASSERT_EQ(engine().grant_operator_pair("alice", "not_admitted"), nullptr);
     lp_grant_host_services("[]");
+}
+
+LOGOS_TEST(a_stopped_authority_pushes_no_revocation) {
+    CapabilityAuthority authority;
+    std::atomic<int> pushes{0};
+    authority.setRevocationPush([&](const CapabilityAuthority::Revocation&, const std::string&) {
+        ++pushes;
+        return LP_OK;
+    });
+    uint64_t callerGeneration = 0;
+    uint64_t targetGeneration = 0;
+    authority.admit("stop_caller", "module", callerGeneration);
+    authority.admit("stop_target", "module", targetGeneration);
+    authority.recordPair("stop_caller", "stop_target", "stop_token");
+    authority.stopRevocations();
+    LOGOS_ASSERT(authority.retire("stop_caller", callerGeneration));
+    authority.drainRevocations();
+    LOGOS_ASSERT_EQ(pushes.load(), 0);
 }

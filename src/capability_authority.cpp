@@ -36,39 +36,95 @@ std::string digestOf(const std::string& token)
     return value;
 }
 
-// Pushes each revocation to its target, retried, off the caller's thread.
-void pushRevocations(std::vector<CapabilityAuthority::Revocation> revocations)
+int pushToTarget(const CapabilityAuthority::Revocation& revocation, const std::string& auth)
 {
-    if (revocations.empty()) return;
-    std::thread([revocations = std::move(revocations)] {
-        for (const auto& revocation : revocations) {
-            const std::string auth =
-                CapabilityAuthority::instance().credentialFor(revocation.target);
-            if (auth.empty()) continue; // the target is gone too
-            int status = LP_ERR_INTERNAL;
-            for (int attempt = 0; attempt < kRevocationAttempts && status != LP_OK; ++attempt) {
-                lp_client* client = lp_client_create(revocation.target.c_str(),
-                                                     "capability_module", nullptr, nullptr);
-                status = client ? lp_revoke_module_token_to(
-                                      client, auth.c_str(), revocation.target.c_str(),
-                                      revocation.caller.c_str(), revocation.digest.c_str(),
-                                      kPushTimeoutMs)
-                                : LP_ERR_UNAVAILABLE;
-                if (client) lp_client_destroy(client);
-            }
-            if (status != LP_OK)
-                std::fprintf(stderr, "[capability_module] could not revoke %s's token at %s\n",
-                             revocation.caller.c_str(), revocation.target.c_str());
-        }
-    }).detach();
+    lp_client* client =
+        lp_client_create(revocation.target.c_str(), "capability_module", nullptr, nullptr);
+    const int status = client ? lp_revoke_module_token_to(
+                                    client, auth.c_str(), revocation.target.c_str(),
+                                    revocation.caller.c_str(), revocation.digest.c_str(),
+                                    kPushTimeoutMs)
+                              : LP_ERR_UNAVAILABLE;
+    if (client) lp_client_destroy(client);
+    return status;
 }
 
 } // namespace
 
 CapabilityAuthority& CapabilityAuthority::instance()
 {
-    static CapabilityAuthority authority;
-    return authority;
+    // Leaked: a static destructor must not join the worker (on Windows it runs
+    // under the loader lock); aboutToUnload() stops it instead.
+    static auto* authority = new CapabilityAuthority;
+    return *authority;
+}
+
+CapabilityAuthority::~CapabilityAuthority()
+{
+    stopRevocations();
+}
+
+void CapabilityAuthority::setRevocationPush(RevocationPush push)
+{
+    std::lock_guard<std::mutex> lock(m_pushMutex);
+    m_push = std::move(push);
+}
+
+void CapabilityAuthority::queueRevocations(std::vector<Revocation> revocations)
+{
+    if (revocations.empty()) return;
+    std::lock_guard<std::mutex> lock(m_pushMutex);
+    if (m_pushStopped) return;
+    for (auto& revocation : revocations) m_revocations.push_back(std::move(revocation));
+    if (!m_pushWorker.joinable()) m_pushWorker = std::thread([this] { runRevocations(); });
+    m_pushWake.notify_one();
+}
+
+void CapabilityAuthority::runRevocations()
+{
+    std::unique_lock<std::mutex> lock(m_pushMutex);
+    for (;;) {
+        m_pushWake.wait(lock, [this] { return m_pushStopped || !m_revocations.empty(); });
+        if (m_pushStopped) return;
+        const Revocation revocation = std::move(m_revocations.front());
+        m_revocations.pop_front();
+        const RevocationPush push = m_push;
+        m_pushing = true;
+        lock.unlock();
+        const std::string auth = credentialFor(revocation.target);
+        int status = auth.empty() ? LP_OK : LP_ERR_INTERNAL; // empty: the target is gone too
+        for (int attempt = 0; attempt < kRevocationAttempts && status != LP_OK && !m_pushStopped;
+             ++attempt)
+            status = push ? push(revocation, auth) : pushToTarget(revocation, auth);
+        if (status != LP_OK && !m_pushStopped)
+            std::fprintf(stderr, "[capability_module] could not revoke %s's token at %s\n",
+                         revocation.caller.c_str(), revocation.target.c_str());
+        lock.lock();
+        m_pushing = false;
+        m_pushIdle.notify_all();
+    }
+}
+
+void CapabilityAuthority::drainRevocations()
+{
+    std::unique_lock<std::mutex> lock(m_pushMutex);
+    m_pushIdle.wait(lock, [this] {
+        return m_pushStopped || (m_revocations.empty() && !m_pushing);
+    });
+}
+
+void CapabilityAuthority::stopRevocations()
+{
+    std::thread worker;
+    {
+        std::lock_guard<std::mutex> lock(m_pushMutex);
+        m_pushStopped = true;
+        m_revocations.clear();
+        worker = std::move(m_pushWorker);
+    }
+    m_pushWake.notify_all();
+    m_pushIdle.notify_all();
+    if (worker.joinable()) worker.join();
 }
 
 std::string CapabilityAuthority::admit(const std::string& name, const std::string& kind,
@@ -111,7 +167,7 @@ bool CapabilityAuthority::retire(const std::string& name, uint64_t generation)
             pair = m_pairs.erase(pair);
         }
     }
-    pushRevocations(std::move(revocations));
+    queueRevocations(std::move(revocations));
     return true;
 }
 
@@ -194,7 +250,7 @@ bool CapabilityAuthority::setRestrictions(const std::string& text)
             pair = m_pairs.erase(pair);
         }
     }
-    pushRevocations(std::move(revocations));
+    queueRevocations(std::move(revocations));
     return true;
 }
 
