@@ -33,6 +33,10 @@ nix build .#checks.<system>.unit-tests -L                       # builds + runs 
 ./result/bin/capability_module_tests --filter requestModule     # filter by name
 ```
 
+The same tests run on Windows in CI (`.github/workflows/windows.yml`):
+`nix build .#packages.x86_64-windows.unit-tests` cross-builds them with the test
+manifest that logos-windows-ci runs on a Windows runner.
+
 ## Layout
 
 ```
