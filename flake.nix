@@ -39,7 +39,18 @@
           dir = ./tests;
         };
       };
+      # The same module built as a Qt plugin, for hosts whose tests need a real
+      # one (liblogos' Qt-plugin discovery and logos_host_qt load tests).
+      qtModule = logos-module-builder.lib.mkLogosModule {
+        src = ./.;
+        configFile = builtins.toFile "capability-module-qt.json" (builtins.toJSON
+          (builtins.removeAttrs (builtins.fromJSON (builtins.readFile ./metadata.json)) [ "transport" ]));
+        flakeInputs = inputs;
+      };
     in module // {
       checks = module.checks or {};
+      packages = builtins.mapAttrs
+        (system: packages: packages // { qt-lib = qtModule.packages.${system}.lib; })
+        module.packages;
     };
 }
