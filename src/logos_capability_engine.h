@@ -6,6 +6,8 @@
  * in the image it loaded in-process. Returned strings are freed with string_free;
  * every entry is thread-safe and never calls back into the engine. */
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,7 +35,27 @@ typedef struct logos_capability_engine_v1 {
      * absent is unrestricted. 0, or -1 for a malformed document. */
     int (*set_restrictions)(const char* restrictions_json);
     void (*string_free)(char* value);
+
+    /* Appended later: present when LOGOS_CAPABILITY_ENGINE_HAS says so. */
+
+    /* Whether `consumer` on runtime `peer` may reach `target` here:
+     * {"allow":<bool>,"decision":"<id>"}. A consumer the remote policy does not
+     * list is denied, in every mode. */
+    char* (*evaluate_remote_access)(const char* peer, const char* consumer, const char* target);
+    /* Replaces the remote policy, {"<runtime id>/<consumer>":["<target>",...]}, where
+     * the consumer "*" is any of that runtime's and the target "*" any export.
+     * 0, or -1 for a malformed document. */
+    int (*set_remote_policy)(const char* policy_json);
+    /* Replaces the caller scopes, {"<caller>":["<target>",...]}: a caller listed is
+     * granted pairs to those targets only, in every mode, and loses any other it
+     * holds. 0, or -1 for a malformed document. */
+    int (*set_caller_scopes)(const char* scopes_json);
 } logos_capability_engine_v1;
+
+/* Whether `engine`, as its authority built it, has entry `member`. */
+#define LOGOS_CAPABILITY_ENGINE_HAS(engine, member)                                      \
+    ((engine)->size >= offsetof(logos_capability_engine_v1, member) + sizeof((engine)->member) \
+     && (engine)->member != NULL)
 
 typedef const logos_capability_engine_v1* (*logos_module_capability_engine_v1_fn)(void);
 
