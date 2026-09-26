@@ -45,6 +45,16 @@ public:
     bool setRestrictions(const std::string& json);
     bool allows(const std::string& caller, const std::string& target) const;
 
+    // Peering: {"<runtime id>/<consumer>":["<target>",...]}, "*" matching any
+    // consumer or target. A remote consumer it does not list is denied.
+    bool setRemotePolicy(const std::string& json);
+    bool allowsRemote(const std::string& peer, const std::string& consumer,
+                      const std::string& target) const;
+
+    // {"<caller>":["<target>",...]}: a caller listed pairs with those targets only.
+    bool setCallerScopes(const std::string& json);
+    bool withinScope(const std::string& caller, const std::string& target) const;
+
     // Revocations of tokens held at targets that are still admitted, pushed in
     // order by one worker the authority owns.
     struct Revocation {
@@ -74,6 +84,8 @@ private:
     std::map<std::string, Identity> m_identities;
     std::map<std::pair<std::string, std::string>, std::string> m_pairs;
     std::map<std::string, std::set<std::string>> m_restrictions;
+    std::map<std::string, std::set<std::string>> m_remotePolicy;
+    std::map<std::string, std::set<std::string>> m_scopes;
     uint64_t m_nextGeneration = 1;
 
     std::mutex m_pushMutex;

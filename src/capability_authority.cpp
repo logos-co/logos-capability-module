@@ -265,6 +265,83 @@ bool CapabilityAuthority::allows(const std::string& caller, const std::string& t
     return rule == m_restrictions.end() || rule->second.count(caller) > 0;
 }
 
+namespace {
+
+// {"<key>":["<name>",...]}, or nothing when malformed.
+std::optional<std::map<std::string, std::set<std::string>>> nameLists(const std::string& text)
+{
+    const nlohmann::json doc = nlohmann::json::parse(text, nullptr, false);
+    if (!doc.is_object()) return std::nullopt;
+    std::map<std::string, std::set<std::string>> lists;
+    for (const auto& [key, names] : doc.items()) {
+        if (key.empty() || !names.is_array()) return std::nullopt;
+        auto& list = lists[key];
+        for (const auto& name : names) {
+            if (!name.is_string() || name.get<std::string>().empty()) return std::nullopt;
+            list.insert(name.get<std::string>());
+        }
+    }
+    return lists;
+}
+
+} // namespace
+
+bool CapabilityAuthority::setRemotePolicy(const std::string& text)
+{
+    auto policy = nameLists(text);
+    if (!policy) return false;
+    for (const auto& [key, targets] : *policy) {
+        const auto slash = key.find('/');
+        if (slash == 0 || slash == std::string::npos || slash + 1 == key.size()) return false;
+    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_remotePolicy = std::move(*policy);
+    return true;
+}
+
+bool CapabilityAuthority::allowsRemote(const std::string& peer, const std::string& consumer,
+                                       const std::string& target) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const std::string& key : {peer + "/" + consumer, peer + "/*"}) {
+        const auto rule = m_remotePolicy.find(key);
+        if (rule != m_remotePolicy.end() && (rule->second.count(target) || rule->second.count("*")))
+            return true;
+    }
+    return false;
+}
+
+bool CapabilityAuthority::setCallerScopes(const std::string& text)
+{
+    auto scopes = nameLists(text);
+    if (!scopes) return false;
+    std::vector<Revocation> revocations;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_scopes = std::move(*scopes);
+        // A pair outside its caller's new scope stops working now.
+        for (auto pair = m_pairs.begin(); pair != m_pairs.end();) {
+            const auto& [caller, target] = pair->first;
+            const auto scope = m_scopes.find(caller);
+            if (scope == m_scopes.end() || scope->second.count(target)) {
+                ++pair;
+                continue;
+            }
+            if (m_identities.count(target)) revocations.push_back({target, caller, digestOf(pair->second)});
+            pair = m_pairs.erase(pair);
+        }
+    }
+    queueRevocations(std::move(revocations));
+    return true;
+}
+
+bool CapabilityAuthority::withinScope(const std::string& caller, const std::string& target) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto scope = m_scopes.find(caller);
+    return scope == m_scopes.end() || scope->second.count(target) > 0;
+}
+
 // ── logos_capability_engine_v1 ────────────────────────────────────────────────
 
 namespace {
@@ -335,6 +412,25 @@ int engineSetRestrictions(const char* json)
     return json && CapabilityAuthority::instance().setRestrictions(json) ? 0 : -1;
 }
 
+char* engineEvaluateRemoteAccess(const char* peer, const char* consumer, const char* target)
+{
+    if (!peer || !consumer || !target) return nullptr;
+    const bool allow = CapabilityAuthority::instance().allowsRemote(peer, consumer, target);
+    // Names this decision in the audit of the runtime that asked.
+    const std::string decision = CapabilityAuthority::mintToken();
+    return copy(nlohmann::json{{"allow", allow}, {"decision", decision}}.dump());
+}
+
+int engineSetRemotePolicy(const char* json)
+{
+    return json && CapabilityAuthority::instance().setRemotePolicy(json) ? 0 : -1;
+}
+
+int engineSetCallerScopes(const char* json)
+{
+    return json && CapabilityAuthority::instance().setCallerScopes(json) ? 0 : -1;
+}
+
 void engineStringFree(char* value)
 {
     std::free(value);
@@ -350,6 +446,9 @@ const logos_capability_engine_v1 kEngine = {
     &engineGrantOperatorPair,
     &engineSetRestrictions,
     &engineStringFree,
+    &engineEvaluateRemoteAccess,
+    &engineSetRemotePolicy,
+    &engineSetCallerScopes,
 };
 
 } // namespace

@@ -80,6 +80,8 @@ struct Retiring {
     {
         for (const auto& a : admitted) engine().retire(a.name.c_str(), a.generation);
         engine().set_restrictions("{}");
+        engine().set_caller_scopes("{}");
+        engine().set_remote_policy("{}");
         CapabilityAuthority::instance().drainRevocations();
         std::lock_guard<std::mutex> lock(g_pushedMutex);
         g_pushed.clear();
@@ -236,4 +238,55 @@ LOGOS_TEST(a_stopped_authority_pushes_no_revocation) {
     LOGOS_ASSERT(authority.retire("stop_caller", callerGeneration));
     authority.drainRevocations();
     LOGOS_ASSERT_EQ(pushes.load(), 0);
+}
+
+// ── peering ──────────────────────────────────────────────────────────────────
+
+LOGOS_TEST(the_remote_policy_decides_remote_access) {
+    Retiring store;
+    const auto decide = [](const char* peer, const char* consumer, const char* target) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_access(peer, consumer, target)));
+    };
+    LOGOS_ASSERT(LOGOS_CAPABILITY_ENGINE_HAS(&engine(), set_caller_scopes));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(
+        R"({"peer-a/wallet":["auth_wallet"],"peer-b/*":["*"]})"), 0);
+    LOGOS_ASSERT(decide("peer-a", "wallet", "auth_wallet").value("allow", false));
+    LOGOS_ASSERT_FALSE(decide("peer-a", "wallet", "auth_wallet").value("decision", "").empty());
+    // Unlisted consumer, target or runtime: denied.
+    LOGOS_ASSERT_FALSE(decide("peer-a", "miner", "auth_wallet").value("allow", true));
+    LOGOS_ASSERT_FALSE(decide("peer-a", "wallet", "other").value("allow", true));
+    LOGOS_ASSERT_FALSE(decide("peer-c", "wallet", "auth_wallet").value("allow", true));
+    // "*" as the consumer and as the target.
+    LOGOS_ASSERT(decide("peer-b", "anyone", "anything").value("allow", false));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"no-runtime":["x"]})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/wallet":"auth_wallet"})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy("{}"), 0);
+    LOGOS_ASSERT_FALSE(decide("peer-b", "anyone", "anything").value("allow", true));
+}
+
+LOGOS_TEST(a_scoped_caller_pairs_only_within_its_scope) {
+    LogosMockSetup mock;
+    lp_grant_host_services(R"(["token_delivery"])");
+    Retiring store;
+    store.add("auth_facade");
+    store.add("auth_peering");
+    store.add("auth_other");
+    CapabilityModuleImpl impl;
+    std::string held;
+    {
+        const auto caller = logos::CallCaller::module("auth_facade");
+        held = impl.requestModule("", "auth_other");
+        LOGOS_ASSERT_FALSE(held.empty());
+    }
+    LOGOS_ASSERT_EQ(engine().set_caller_scopes(R"({"auth_facade":["auth_peering"]})"), 0);
+    // The pair it held outside its new scope is revoked at once.
+    const auto revocations = pushed();
+    LOGOS_ASSERT_EQ(revocations.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(revocations[0].target, std::string("auth_other"));
+    LOGOS_ASSERT_EQ(revocations[0].digest, digestOf(held));
+    const auto caller = logos::CallCaller::module("auth_facade");
+    LOGOS_ASSERT(impl.requestModule("", "auth_other").empty());
+    LOGOS_ASSERT_FALSE(impl.requestModule("", "auth_peering").empty());
+    LOGOS_ASSERT_EQ(engine().set_caller_scopes(R"({"auth_facade":"auth_peering"})"), -1);
+    lp_grant_host_services("[]");
 }
