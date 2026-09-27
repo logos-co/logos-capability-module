@@ -41,9 +41,27 @@ public:
     void recordPair(const std::string& caller, const std::string& target, const std::string& token);
     void forgetPair(const std::string& caller, const std::string& target);
 
-    // {"<target>":["<caller>",...]}; a target absent is unrestricted.
+    // {"<target>":["<caller>",...]}; a target absent is unrestricted, and operators
+    // ("@op:<name>") are not bound.
     bool setRestrictions(const std::string& json);
     bool allows(const std::string& caller, const std::string& target) const;
+
+    // The token `caller` presents to `target`, pushed to the target; empty when
+    // refused, with `why`. One push per pair at a time, and a pair withdrawn while
+    // its push was in flight is revoked rather than returned.
+    std::string issuePair(const std::string& caller, const std::string& target,
+                          std::string* why = nullptr);
+
+    // A token push to a target (LP_OK when it took).
+    struct Push {
+        std::string target;
+        std::string caller;
+        std::string token;
+        std::string auth;
+    };
+    using TokenPush = std::function<int(const Push&)>;
+    // Replaces the push (tests); empty restores it.
+    void setTokenPush(TokenPush push);
 
     // Revocations of tokens held at targets that are still admitted, pushed in
     // order by one worker the authority owns.
@@ -61,6 +79,7 @@ public:
     void stopRevocations();
 
 private:
+    bool allowedLocked(const std::string& caller, const std::string& target) const;
     void queueRevocations(std::vector<Revocation> revocations);
     void runRevocations();
 
@@ -69,11 +88,17 @@ private:
         std::string kind;
         uint64_t generation = 0;
     };
+    struct Pair {
+        std::string token;
+        bool pushing = false;
+    };
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_pairChanged;
     std::map<std::string, Identity> m_identities;
-    std::map<std::pair<std::string, std::string>, std::string> m_pairs;
+    std::map<std::pair<std::string, std::string>, Pair> m_pairs;
     std::map<std::string, std::set<std::string>> m_restrictions;
+    TokenPush m_tokenPush;
     uint64_t m_nextGeneration = 1;
 
     std::mutex m_pushMutex;

@@ -29,6 +29,29 @@ std::string digestOf(const std::string& token)
     return value;
 }
 
+int pushTokenToTarget(const CapabilityAuthority::Push& push)
+{
+    lp_client* client = lp_client_create(push.target.c_str(), "capability_module", nullptr, nullptr);
+    if (!client) return LP_ERR_UNAVAILABLE;
+    const int status = lp_inform_module_token_to(client, push.auth.c_str(), push.target.c_str(),
+                                                 push.caller.c_str(), push.token.c_str(),
+                                                 kPushTimeoutMs);
+    lp_client_destroy(client);
+    return status;
+}
+
+std::string pushFailure(int status)
+{
+    if (status == LP_ERR_UNSUPPORTED)
+        return "this module was not granted token_delivery, so it cannot push tokens";
+    return "the token could not be pushed to it";
+}
+
+bool isOperatorKey(const std::string& caller)
+{
+    return caller.rfind("@op:", 0) == 0;
+}
+
 int pushToTarget(const CapabilityAuthority::Revocation& revocation, const std::string& auth)
 {
     lp_client* client =
@@ -131,6 +154,12 @@ void CapabilityAuthority::stopRevocations()
     if (worker.joinable()) worker.join();
 }
 
+void CapabilityAuthority::setTokenPush(TokenPush push)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_tokenPush = std::move(push);
+}
+
 std::string CapabilityAuthority::admit(const std::string& name, const std::string& kind,
                                        uint64_t& generation)
 {
@@ -167,9 +196,10 @@ bool CapabilityAuthority::retire(const std::string& name, uint64_t generation)
             // What `name` holds elsewhere is withdrawn there; what others hold
             // for `name` died with it.
             if (caller == name && m_identities.count(target))
-                revocations.push_back({target, caller, digestOf(pair->second)});
+                revocations.push_back({target, caller, digestOf(pair->second.token)});
             pair = m_pairs.erase(pair);
         }
+        m_pairChanged.notify_all();
     }
     queueRevocations(std::move(revocations));
     return true;
@@ -209,20 +239,21 @@ std::string CapabilityAuthority::pairToken(const std::string& caller,
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_pairs.find({caller, target});
-    return it == m_pairs.end() ? std::string{} : it->second;
+    return it == m_pairs.end() ? std::string{} : it->second.token;
 }
 
 void CapabilityAuthority::recordPair(const std::string& caller, const std::string& target,
                                      const std::string& token)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_pairs[{caller, target}] = token;
+    m_pairs[{caller, target}] = Pair{token, false};
 }
 
 void CapabilityAuthority::forgetPair(const std::string& caller, const std::string& target)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_pairs.erase({caller, target});
+    m_pairChanged.notify_all();
 }
 
 bool CapabilityAuthority::setRestrictions(const std::string& text)
@@ -250,19 +281,90 @@ bool CapabilityAuthority::setRestrictions(const std::string& text)
                 ++pair;
                 continue;
             }
-            if (m_identities.count(target)) revocations.push_back({target, caller, digestOf(pair->second)});
+            if (m_identities.count(target)) revocations.push_back({target, caller, digestOf(pair->second.token)});
             pair = m_pairs.erase(pair);
         }
+        m_pairChanged.notify_all();
     }
     queueRevocations(std::move(revocations));
     return true;
 }
 
+// Operators are not bound by these restrictions.
+bool CapabilityAuthority::allowedLocked(const std::string& caller, const std::string& target) const
+{
+    if (isOperatorKey(caller)) return true;
+    auto rule = m_restrictions.find(target);
+    return rule == m_restrictions.end() || rule->second.count(caller) > 0;
+}
+
 bool CapabilityAuthority::allows(const std::string& caller, const std::string& target) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto rule = m_restrictions.find(target);
-    return rule == m_restrictions.end() || rule->second.count(caller) > 0;
+    return allowedLocked(caller, target);
+}
+
+std::string CapabilityAuthority::issuePair(const std::string& caller, const std::string& target,
+                                           std::string* why)
+{
+    const auto refuse = [why](std::string reason) {
+        if (why) *why = std::move(reason);
+        return std::string{};
+    };
+    std::vector<Revocation> revocations;
+    std::unique_lock<std::mutex> lock(m_mutex);
+    std::string auth;
+    uint64_t generation = 0;
+    for (;;) {
+        const auto identity = m_identities.find(target);
+        if (identity == m_identities.end()) return refuse("the runtime has not admitted it");
+        if (identity->second.kind != "module") return refuse("it calls, nothing calls it");
+        if (!allowedLocked(caller, target)) return refuse("the access policy denies it");
+        const auto pair = m_pairs.find({caller, target});
+        if (pair == m_pairs.end()) {
+            auth = identity->second.credential;
+            generation = identity->second.generation;
+            break;
+        }
+        if (pair->second.pushing) {
+            m_pairChanged.wait(lock);
+            continue;
+        }
+        return pair->second.token;
+    }
+    // Recorded before the push, so a revocation or a new rule racing it finds it.
+    const std::string token = mintToken();
+    m_pairs[{caller, target}] = Pair{token, true};
+    const TokenPush push = m_tokenPush;
+    lock.unlock();
+    queueRevocations(std::move(revocations));
+    revocations.clear();
+
+    const Push request{target, caller, token, auth};
+    const int status = push ? push(request) : pushTokenToTarget(request);
+
+    lock.lock();
+    const auto pair = m_pairs.find({caller, target});
+    const bool ours = pair != m_pairs.end() && pair->second.token == token;
+    bool kept = false;
+    if (status == LP_OK && ours) {
+        const auto identity = m_identities.find(target);
+        kept = identity != m_identities.end() && identity->second.generation == generation
+            && allowedLocked(caller, target);
+    }
+    if (ours) {
+        if (kept) pair->second.pushing = false;
+        else m_pairs.erase(pair);
+    }
+    // Delivered but no longer wanted: withdraw it at the target, after the push.
+    if (status == LP_OK && !kept && m_identities.count(target))
+        revocations.push_back({target, caller, digestOf(token)});
+    m_pairChanged.notify_all();
+    lock.unlock();
+    queueRevocations(std::move(revocations));
+    if (status != LP_OK) return refuse(pushFailure(status));
+    if (!kept) return refuse("it was withdrawn while its token was pushed");
+    return token;
 }
 
 // ── logos_capability_engine_v1 ────────────────────────────────────────────────
@@ -309,22 +411,12 @@ char* engineCredentialFor(const char* name)
 char* engineGrantOperatorPair(const char* op, const char* target)
 {
     if (!op || !*op || !target) return nullptr;
-    CapabilityAuthority& authority = CapabilityAuthority::instance();
+    std::string why;
     const std::string key = std::string("@op:") + op;
-    if (std::string existing = authority.pairToken(key, target); !existing.empty())
-        return copy(existing);
-    const std::string auth = authority.credentialFor(target);
-    if (auth.empty() || authority.isConsumerOnly(target)) return nullptr;
-    const std::string token = CapabilityAuthority::mintToken();
-    authority.recordPair(key, target, token);
-    lp_client* client = lp_client_create(target, "capability_module", nullptr, nullptr);
-    const int status = client ? lp_inform_module_token_to(client, auth.c_str(), target,
-                                                          key.c_str(), token.c_str(),
-                                                          kPushTimeoutMs)
-                              : LP_ERR_UNAVAILABLE;
-    if (client) lp_client_destroy(client);
-    if (status != LP_OK) {
-        authority.forgetPair(key, target);
+    const std::string token = CapabilityAuthority::instance().issuePair(key, target, &why);
+    if (token.empty()) {
+        std::fprintf(stderr, "[capability_module] refusing operator %s -> %s: %s\n", op, target,
+                     why.c_str());
         return nullptr;
     }
     return copy(token);
@@ -339,6 +431,8 @@ void engineStringFree(char* value)
 {
     std::free(value);
 }
+
+
 
 const logos_capability_engine_v1 kEngine = {
     sizeof(logos_capability_engine_v1),
