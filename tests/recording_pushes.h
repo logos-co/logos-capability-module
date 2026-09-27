@@ -72,10 +72,11 @@ public:
     Pushes(const Pushes&) = delete;
     Pushes& operator=(const Pushes&) = delete;
 
-    void admit(const std::string& name)
+    void admit(const std::string& name, bool pending = false)
     {
         unsigned long long generation = 0;
-        char* credential = engine().admit(name.c_str(), "module", &generation);
+        char* credential = pending ? engine().admit_pending(name.c_str(), "module", &generation)
+                                   : engine().admit(name.c_str(), "module", &generation);
         engine().string_free(credential);
         m_admitted.emplace_back(name, generation);
     }

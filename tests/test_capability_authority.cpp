@@ -96,6 +96,10 @@ struct Retiring {
 LOGOS_TEST(engine_interface_is_sized_and_versioned) {
     LOGOS_ASSERT_EQ(engine().size, static_cast<unsigned>(sizeof(logos_capability_engine_v1)));
     LOGOS_ASSERT_EQ(engine().version, static_cast<unsigned>(LOGOS_CAPABILITY_ENGINE_VERSION));
+    LOGOS_ASSERT_EQ(engine().version, 2u);
+    LOGOS_ASSERT(LOGOS_CAPABILITY_ENGINE_V1_SIZE < engine().size);
+    LOGOS_ASSERT(engine().set_access_rules && engine().grant_for && engine().admit_pending
+                 && engine().open_target);
 }
 
 LOGOS_TEST(an_admitted_credential_names_its_caller_until_retired) {

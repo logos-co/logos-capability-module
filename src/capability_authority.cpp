@@ -33,15 +33,20 @@ int pushTokenToTarget(const CapabilityAuthority::Push& push)
 {
     lp_client* client = lp_client_create(push.target.c_str(), "capability_module", nullptr, nullptr);
     if (!client) return LP_ERR_UNAVAILABLE;
-    const int status = lp_inform_module_token_to(client, push.auth.c_str(), push.target.c_str(),
-                                                 push.caller.c_str(), push.token.c_str(),
-                                                 kPushTimeoutMs);
+    const int status = push.scope
+        ? lp_inform_scoped_module_token_to(client, push.auth.c_str(), push.target.c_str(),
+                                           push.caller.c_str(), push.token.c_str(),
+                                           push.scope->c_str(), kPushTimeoutMs)
+        : lp_inform_module_token_to(client, push.auth.c_str(), push.target.c_str(),
+                                    push.caller.c_str(), push.token.c_str(), kPushTimeoutMs);
     lp_client_destroy(client);
     return status;
 }
 
 std::string pushFailure(int status)
 {
+    if (status == LP_ERR_TARGET_UNSUPPORTED)
+        return "it cannot take a method-scoped grant (a Qt plugin built before them)";
     if (status == LP_ERR_UNSUPPORTED)
         return "this module was not granted token_delivery, so it cannot push tokens";
     return "the token could not be pushed to it";
@@ -154,6 +159,15 @@ void CapabilityAuthority::stopRevocations()
     if (worker.joinable()) worker.join();
 }
 
+std::string CapabilityAuthority::Grant::json() const
+{
+    if (kind == Kind::All) return "\"*\"";
+    nlohmann::json list = nlohmann::json::array();
+    if (kind == Kind::Methods)
+        for (const std::string& method : methods) list.push_back(method);
+    return list.dump();
+}
+
 void CapabilityAuthority::setTokenPush(TokenPush push)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -161,7 +175,7 @@ void CapabilityAuthority::setTokenPush(TokenPush push)
 }
 
 std::string CapabilityAuthority::admit(const std::string& name, const std::string& kind,
-                                       uint64_t& generation)
+                                       uint64_t& generation, bool pending)
 {
     if (name.empty() || (kind != "module" && kind != "shell" && kind != "presentation"))
         return {};
@@ -175,8 +189,17 @@ std::string CapabilityAuthority::admit(const std::string& name, const std::strin
     if (previous) retire(name, previous);
     std::lock_guard<std::mutex> lock(m_mutex);
     generation = m_nextGeneration++;
-    m_identities[name] = Identity{credential, kind, generation};
+    m_identities[name] = Identity{credential, kind, generation, !pending};
     return credential;
+}
+
+bool CapabilityAuthority::openTarget(const std::string& name)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto it = m_identities.find(name);
+    if (it == m_identities.end()) return false;
+    it->second.open = true;
+    return true;
 }
 
 bool CapabilityAuthority::retire(const std::string& name, uint64_t generation)
@@ -246,7 +269,7 @@ void CapabilityAuthority::recordPair(const std::string& caller, const std::strin
                                      const std::string& token)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_pairs[{caller, target}] = Pair{token, false};
+    m_pairs[{caller, target}] = Pair{token, Grant::all(), false};
 }
 
 void CapabilityAuthority::forgetPair(const std::string& caller, const std::string& target)
@@ -256,52 +279,110 @@ void CapabilityAuthority::forgetPair(const std::string& caller, const std::strin
     m_pairChanged.notify_all();
 }
 
-bool CapabilityAuthority::setRestrictions(const std::string& text)
+// Lists give each named caller every method; objects map a caller to "*", a method
+// list, or [] (nothing). Anything else refuses the whole document.
+std::optional<std::map<std::string, CapabilityAuthority::Rule>>
+CapabilityAuthority::parseRules(const std::string& text, bool objects) const
 {
     const nlohmann::json doc = nlohmann::json::parse(text, nullptr, false);
-    if (!doc.is_object()) return false;
-    std::map<std::string, std::set<std::string>> restrictions;
+    if (!doc.is_object()) return std::nullopt;
+    std::map<std::string, Rule> rules;
     for (const auto& [target, callers] : doc.items()) {
-        if (!callers.is_array()) return false;
-        auto& allowed = restrictions[target];
-        for (const auto& caller : callers) {
-            if (!caller.is_string()) return false;
-            allowed.insert(caller.get<std::string>());
+        if (target.empty()) return std::nullopt;
+        Rule& rule = rules[target];
+        if (callers.is_array()) {
+            for (const auto& caller : callers) {
+                if (!caller.is_string() || caller.get<std::string>().empty()) return std::nullopt;
+                rule[caller.get<std::string>()] = Grant::all();
+            }
+            continue;
+        }
+        if (!objects || !callers.is_object()) return std::nullopt;
+        for (const auto& [caller, value] : callers.items()) {
+            if (caller.empty()) return std::nullopt;
+            Grant grant;
+            if (value.is_string() && value.get<std::string>() == "*") {
+                grant = Grant::all();
+            } else if (value.is_array()) {
+                grant.kind = value.empty() ? Grant::Kind::None : Grant::Kind::Methods;
+                for (const auto& method : value) {
+                    if (!method.is_string()) return std::nullopt;
+                    const std::string name = method.get<std::string>();
+                    if (name.empty() || name == "*" || !grant.methods.insert(name).second)
+                        return std::nullopt;
+                }
+            } else {
+                return std::nullopt;
+            }
+            rule[caller] = std::move(grant);
         }
     }
+    return rules;
+}
+
+// A pair the new rules deny, or grant differently, stops working now.
+void CapabilityAuthority::replaceRules(std::map<std::string, Rule> rules, bool operatorsBound)
+{
     std::vector<Revocation> revocations;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_restrictions = std::move(restrictions);
-        // Pairs the new policy denies stop working now, not at their next request.
+        m_rules = std::move(rules);
+        m_operatorsBound = operatorsBound;
         for (auto pair = m_pairs.begin(); pair != m_pairs.end();) {
             const auto& [caller, target] = pair->first;
-            auto rule = m_restrictions.find(target);
-            if (rule == m_restrictions.end() || rule->second.count(caller)) {
+            if (evaluate(caller, target) == pair->second.grant) {
                 ++pair;
                 continue;
             }
-            if (m_identities.count(target)) revocations.push_back({target, caller, digestOf(pair->second.token)});
+            if (m_identities.count(target))
+                revocations.push_back({target, caller, digestOf(pair->second.token)});
             pair = m_pairs.erase(pair);
         }
         m_pairChanged.notify_all();
     }
     queueRevocations(std::move(revocations));
+}
+
+bool CapabilityAuthority::setRestrictions(const std::string& text)
+{
+    auto rules = parseRules(text, false);
+    if (!rules) return false;
+    replaceRules(std::move(*rules), false);
     return true;
 }
 
-// Operators are not bound by these restrictions.
-bool CapabilityAuthority::allowedLocked(const std::string& caller, const std::string& target) const
+bool CapabilityAuthority::setAccessRules(const std::string& text)
 {
-    if (isOperatorKey(caller)) return true;
-    auto rule = m_restrictions.find(target);
-    return rule == m_restrictions.end() || rule->second.count(caller) > 0;
+    auto rules = parseRules(text, true);
+    if (!rules) return false;
+    replaceRules(std::move(*rules), true);
+    return true;
+}
+
+// An exact caller wins, then "@op:*" for an operator or "*" for anyone else.
+CapabilityAuthority::Grant CapabilityAuthority::evaluate(const std::string& caller,
+                                                         const std::string& target) const
+{
+    const auto rule = m_rules.find(target);
+    if (rule == m_rules.end()) return Grant::all();
+    const bool op = isOperatorKey(caller);
+    if (op && !m_operatorsBound) return Grant::all();
+    if (const auto exact = rule->second.find(caller); exact != rule->second.end())
+        return exact->second;
+    const auto wildcard = rule->second.find(op ? "@op:*" : "*");
+    return wildcard == rule->second.end() ? Grant{} : wildcard->second;
+}
+
+CapabilityAuthority::Grant CapabilityAuthority::grantFor(const std::string& caller,
+                                                         const std::string& target) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return evaluate(caller, target);
 }
 
 bool CapabilityAuthority::allows(const std::string& caller, const std::string& target) const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return allowedLocked(caller, target);
+    return grantFor(caller, target).kind != Grant::Kind::None;
 }
 
 std::string CapabilityAuthority::issuePair(const std::string& caller, const std::string& target,
@@ -313,13 +394,16 @@ std::string CapabilityAuthority::issuePair(const std::string& caller, const std:
     };
     std::vector<Revocation> revocations;
     std::unique_lock<std::mutex> lock(m_mutex);
+    Grant grant;
     std::string auth;
     uint64_t generation = 0;
     for (;;) {
         const auto identity = m_identities.find(target);
         if (identity == m_identities.end()) return refuse("the runtime has not admitted it");
         if (identity->second.kind != "module") return refuse("it calls, nothing calls it");
-        if (!allowedLocked(caller, target)) return refuse("the access policy denies it");
+        if (!identity->second.open) return refuse("it is still loading");
+        grant = evaluate(caller, target);
+        if (grant.kind == Grant::Kind::None) return refuse("the access policy denies it");
         const auto pair = m_pairs.find({caller, target});
         if (pair == m_pairs.end()) {
             auth = identity->second.credential;
@@ -330,17 +414,21 @@ std::string CapabilityAuthority::issuePair(const std::string& caller, const std:
             m_pairChanged.wait(lock);
             continue;
         }
-        return pair->second.token;
+        if (pair->second.grant == grant) return pair->second.token;
+        revocations.push_back({target, caller, digestOf(pair->second.token)});
+        m_pairs.erase(pair);
     }
     // Recorded before the push, so a revocation or a new rule racing it finds it.
     const std::string token = mintToken();
-    m_pairs[{caller, target}] = Pair{token, true};
+    m_pairs[{caller, target}] = Pair{token, grant, true};
     const TokenPush push = m_tokenPush;
     lock.unlock();
     queueRevocations(std::move(revocations));
     revocations.clear();
 
-    const Push request{target, caller, token, auth};
+    Push request{target, caller, token, auth, std::nullopt};
+    if (grant.kind == Grant::Kind::Methods)
+        request.scope = nlohmann::json{{"methods", grant.methods}}.dump();
     const int status = push ? push(request) : pushTokenToTarget(request);
 
     lock.lock();
@@ -350,7 +438,7 @@ std::string CapabilityAuthority::issuePair(const std::string& caller, const std:
     if (status == LP_OK && ours) {
         const auto identity = m_identities.find(target);
         kept = identity != m_identities.end() && identity->second.generation == generation
-            && allowedLocked(caller, target);
+            && evaluate(caller, target) == grant;
     }
     if (ours) {
         if (kept) pair->second.pushing = false;
@@ -407,7 +495,8 @@ char* engineCredentialFor(const char* name)
     return credential.empty() ? nullptr : copy(credential);
 }
 
-// The target learns the token as "@op:<op>", a key no module name can take.
+// The target learns the token as "@op:<op>", a key no module name can take; the
+// same evaluation as requestModule decides it.
 char* engineGrantOperatorPair(const char* op, const char* target)
 {
     if (!op || !*op || !target) return nullptr;
@@ -432,7 +521,32 @@ void engineStringFree(char* value)
     std::free(value);
 }
 
+int engineSetAccessRules(const char* json)
+{
+    return json && CapabilityAuthority::instance().setAccessRules(json) ? 0 : -1;
+}
 
+char* engineGrantFor(const char* caller, const char* target)
+{
+    if (!caller || !target) return nullptr;
+    return copy(CapabilityAuthority::instance().grantFor(caller, target).json());
+}
+
+char* engineAdmitPending(const char* name, const char* kind, unsigned long long* generation)
+{
+    if (!name || !kind || !generation) return nullptr;
+    uint64_t admitted = 0;
+    const std::string credential =
+        CapabilityAuthority::instance().admit(name, kind, admitted, true);
+    if (credential.empty()) return nullptr;
+    *generation = admitted;
+    return copy(credential);
+}
+
+int engineOpenTarget(const char* name)
+{
+    return name && CapabilityAuthority::instance().openTarget(name) ? 0 : -1;
+}
 
 const logos_capability_engine_v1 kEngine = {
     sizeof(logos_capability_engine_v1),
@@ -444,6 +558,10 @@ const logos_capability_engine_v1 kEngine = {
     &engineGrantOperatorPair,
     &engineSetRestrictions,
     &engineStringFree,
+    &engineSetAccessRules,
+    &engineGrantFor,
+    &engineAdmitPending,
+    &engineOpenTarget,
 };
 
 } // namespace

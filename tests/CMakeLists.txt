@@ -13,6 +13,7 @@ logos_test(
         test_capability_module.cpp
         test_capability_authority.cpp
         test_capability_pushes.cpp
+        test_capability_grants.cpp
     EXTRA_INCLUDES
         ../src
 )
