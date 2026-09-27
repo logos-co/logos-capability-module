@@ -42,14 +42,20 @@ typedef struct logos_capability_engine_v1 {
      * {"allow":<bool>,"decision":"<id>"}. A consumer the remote policy does not
      * list is denied, in every mode. */
     char* (*evaluate_remote_access)(const char* peer, const char* consumer, const char* target);
-    /* Replaces the remote policy, {"<runtime id>/<consumer>":["<target>",...]}, where
-     * the consumer "*" is any of that runtime's and the target "*" any export.
+    /* Replaces the remote policy, {"<runtime id>/<consumer>": <grants>}, where the
+     * consumer "*" is any of that runtime's. <grants> is ["<target>",...] (every method
+     * of each) or {"<target>": "*" | ["<method>",...] | []}; the target "*" is any.
+     * An exact key wins over "<runtime id>/*" and an exact target over "*": never merged.
      * 0, or -1 for a malformed document. */
     int (*set_remote_policy)(const char* policy_json);
     /* Replaces the caller scopes, {"<caller>":["<target>",...]}: a caller listed is
      * granted pairs to those targets only, in every mode, and loses any other it
      * holds. 0, or -1 for a malformed document. */
     int (*set_caller_scopes)(const char* scopes_json);
+    /* Whether `consumer` on runtime `peer` may call `method` of `target` here, by the
+     * remote policy: {"allow":<bool>,"decision":"<id>"}. */
+    char* (*evaluate_remote_call)(const char* peer, const char* consumer, const char* target,
+                                  const char* method);
 } logos_capability_engine_v1;
 
 /* Whether `engine`, as its authority built it, has entry `member`. */

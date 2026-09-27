@@ -45,11 +45,22 @@ public:
     bool setRestrictions(const std::string& json);
     bool allows(const std::string& caller, const std::string& target) const;
 
-    // Peering: {"<runtime id>/<consumer>":["<target>",...]}, "*" matching any
-    // consumer or target. A remote consumer it does not list is denied.
+    // Peering: {"<runtime id>/<consumer>": ["<target>",...] | {"<target>": "*" |
+    // ["<method>",...] | []}}, "*" matching any consumer or target. An exact key wins
+    // over "<runtime id>/*" and an exact target over "*". A consumer it does not
+    // list is denied.
     bool setRemotePolicy(const std::string& json);
+    // Some method of `target` is granted.
     bool allowsRemote(const std::string& peer, const std::string& consumer,
                       const std::string& target) const;
+    bool allowsRemoteCall(const std::string& peer, const std::string& consumer,
+                          const std::string& target, const std::string& method) const;
+
+    // One target's remote grant: every method, or those listed; none when empty.
+    struct RemoteGrant {
+        bool all = false;
+        std::set<std::string> methods;
+    };
 
     // {"<caller>":["<target>",...]}: a caller listed pairs with those targets only.
     bool setCallerScopes(const std::string& json);
@@ -84,7 +95,9 @@ private:
     std::map<std::string, Identity> m_identities;
     std::map<std::pair<std::string, std::string>, std::string> m_pairs;
     std::map<std::string, std::set<std::string>> m_restrictions;
-    std::map<std::string, std::set<std::string>> m_remotePolicy;
+    const RemoteGrant* remoteGrantLocked(const std::string& peer, const std::string& consumer,
+                                         const std::string& target) const;
+    std::map<std::string, std::map<std::string, RemoteGrant>> m_remotePolicy;
     std::map<std::string, std::set<std::string>> m_scopes;
     uint64_t m_nextGeneration = 1;
 

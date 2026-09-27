@@ -264,6 +264,39 @@ LOGOS_TEST(the_remote_policy_decides_remote_access) {
     LOGOS_ASSERT_FALSE(decide("peer-b", "anyone", "anything").value("allow", true));
 }
 
+LOGOS_TEST(the_remote_policy_grants_methods_and_an_exact_key_wins) {
+    Retiring store;
+    const auto call = [](const char* peer, const char* consumer, const char* target, const char* method) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_call(peer, consumer, target, method)))
+            .value("allow", false);
+    };
+    const auto reach = [](const char* peer, const char* consumer, const char* target) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_access(peer, consumer, target)))
+            .value("allow", false);
+    };
+    LOGOS_ASSERT(LOGOS_CAPABILITY_ENGINE_HAS(&engine(), evaluate_remote_call));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({
+        "peer-a/ctl": {"core_service": ["getStatus"], "auth_wallet": "*", "auth_none": []},
+        "peer-a/*": ["core_service"]})"), 0);
+    LOGOS_ASSERT(call("peer-a", "ctl", "core_service", "getStatus"));
+    // The exact key wins: the wildcard's every-method grant does not reach ctl.
+    LOGOS_ASSERT_FALSE(call("peer-a", "ctl", "core_service", "loadModule"));
+    LOGOS_ASSERT(call("peer-a", "other", "core_service", "loadModule"));
+    LOGOS_ASSERT(call("peer-a", "ctl", "auth_wallet", "anything"));
+    // [] denies, as does a target the rule leaves out.
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "auth_none"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "unlisted"));
+    LOGOS_ASSERT(reach("peer-a", "ctl", "core_service"));
+    // "*" covers every export, never core_service.
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/*": ["*"], "peer-a/ctl": {"*": "*"}})"), 0);
+    LOGOS_ASSERT(call("peer-a", "ctl", "auth_wallet", "anything"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "core_service"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "other", "core_service"));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":{"core_service":"all"}})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":{"core_service":[1]}})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":5})"), -1);
+}
+
 LOGOS_TEST(a_scoped_caller_pairs_only_within_its_scope) {
     LogosMockSetup mock;
     lp_grant_host_services(R"(["token_delivery"])");

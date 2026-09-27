@@ -288,27 +288,67 @@ std::optional<std::map<std::string, std::set<std::string>>> nameLists(const std:
 
 bool CapabilityAuthority::setRemotePolicy(const std::string& text)
 {
-    auto policy = nameLists(text);
-    if (!policy) return false;
-    for (const auto& [key, targets] : *policy) {
+    const nlohmann::json doc = nlohmann::json::parse(text, nullptr, false);
+    if (!doc.is_object()) return false;
+    std::map<std::string, std::map<std::string, RemoteGrant>> policy;
+    const auto name = [](const nlohmann::json& v) { return v.is_string() && !v.get<std::string>().empty(); };
+    for (const auto& [key, value] : doc.items()) {
         const auto slash = key.find('/');
         if (slash == 0 || slash == std::string::npos || slash + 1 == key.size()) return false;
+        auto& grants = policy[key];
+        if (value.is_array()) {
+            for (const auto& target : value) {
+                if (!name(target)) return false;
+                grants[target.get<std::string>()].all = true;
+            }
+            continue;
+        }
+        if (!value.is_object()) return false;
+        for (const auto& [target, grant] : value.items()) {
+            if (target.empty()) return false;
+            RemoteGrant& g = grants[target];
+            if (grant.is_string() && grant.get<std::string>() == "*") {
+                g.all = true;
+                continue;
+            }
+            if (!grant.is_array()) return false;
+            for (const auto& method : grant) {
+                if (!name(method)) return false;
+                g.methods.insert(method.get<std::string>());
+            }
+        }
     }
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_remotePolicy = std::move(*policy);
+    m_remotePolicy = std::move(policy);
     return true;
+}
+
+const CapabilityAuthority::RemoteGrant* CapabilityAuthority::remoteGrantLocked(
+    const std::string& peer, const std::string& consumer, const std::string& target) const
+{
+    auto rule = m_remotePolicy.find(peer + "/" + consumer);
+    if (rule == m_remotePolicy.end()) rule = m_remotePolicy.find(peer + "/*");
+    if (rule == m_remotePolicy.end()) return nullptr;
+    // The target "*" is every export; Runtime Control is granted by name only.
+    auto grant = rule->second.find(target);
+    if (grant == rule->second.end() && target != "core_service") grant = rule->second.find("*");
+    return grant == rule->second.end() ? nullptr : &grant->second;
 }
 
 bool CapabilityAuthority::allowsRemote(const std::string& peer, const std::string& consumer,
                                        const std::string& target) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    for (const std::string& key : {peer + "/" + consumer, peer + "/*"}) {
-        const auto rule = m_remotePolicy.find(key);
-        if (rule != m_remotePolicy.end() && (rule->second.count(target) || rule->second.count("*")))
-            return true;
-    }
-    return false;
+    const RemoteGrant* grant = remoteGrantLocked(peer, consumer, target);
+    return grant && (grant->all || !grant->methods.empty());
+}
+
+bool CapabilityAuthority::allowsRemoteCall(const std::string& peer, const std::string& consumer,
+                                           const std::string& target, const std::string& method) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const RemoteGrant* grant = remoteGrantLocked(peer, consumer, target);
+    return grant && (grant->all || grant->methods.count(method) > 0);
 }
 
 bool CapabilityAuthority::setCallerScopes(const std::string& text)
@@ -421,6 +461,13 @@ char* engineEvaluateRemoteAccess(const char* peer, const char* consumer, const c
     return copy(nlohmann::json{{"allow", allow}, {"decision", decision}}.dump());
 }
 
+char* engineEvaluateRemoteCall(const char* peer, const char* consumer, const char* target, const char* method)
+{
+    if (!peer || !consumer || !target || !method) return nullptr;
+    const bool allow = CapabilityAuthority::instance().allowsRemoteCall(peer, consumer, target, method);
+    return copy(nlohmann::json{{"allow", allow}, {"decision", CapabilityAuthority::mintToken()}}.dump());
+}
+
 int engineSetRemotePolicy(const char* json)
 {
     return json && CapabilityAuthority::instance().setRemotePolicy(json) ? 0 : -1;
@@ -449,6 +496,7 @@ const logos_capability_engine_v1 kEngine = {
     &engineEvaluateRemoteAccess,
     &engineSetRemotePolicy,
     &engineSetCallerScopes,
+    &engineEvaluateRemoteCall,
 };
 
 } // namespace
