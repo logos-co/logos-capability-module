@@ -48,7 +48,7 @@ src/
 ├── capability_module_impl.{h,cpp}   # CapabilityModuleImpl : LogosModuleContext — the one
 │                                    # dispatchable method, requestModule
 ├── capability_authority.{h,cpp}     # the store of record: admissions, pair tokens,
-│                                    # restrictions, revocation pushes
+│                                    # access rules, scoped pushes, revocations
 └── logos_capability_engine.h        # the engine interface liblogos calls in-process
 tests/
 ├── CMakeLists.txt
