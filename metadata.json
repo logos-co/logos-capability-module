@@ -30,6 +30,7 @@
     }
   },
   "interface": "universal",
+  "transport": "qt_remote_plain",
   "host_services": [
     "token_registry",
     "token_delivery"
