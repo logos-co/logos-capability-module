@@ -2,132 +2,134 @@
 //
 // capability_module is a universal module: a plain, Qt-free C++ class deriving
 // LogosModuleContext, whose public methods ARE its API (the builder generates
-// the plugin glue). So these tests construct the impl class directly — there is
-// no plugin object and no initLogos step to perform.
+// the plugin glue). So these tests construct the impl class directly.
 //
-// requestModule() mints a UUID auth token, pushes it to the target module, and
-// returns it to the caller.
+// requestModule() mints a token for an admitted (caller, target) pair, pushes
+// it to the target with the target's own credential, and returns it. The
+// runtime admits every module through the engine interface, and so do these
+// tests: CapabilityFixture::admit goes through logos_module_capability_engine_v1,
+// the same table liblogos calls.
 //
 // ── What is REAL here and what is not ────────────────────────────────────────
 //
-// Nothing is faked at the lp_* / host-services layer. Every test drives the
-// genuine article:
-//
-//   * the host-services grant     — lp_grant_host_services(), the same public C
-//                                   ABI the host calls; the gates inside
-//                                   lp_token_keys / lp_inform_module_token_to
-//                                   really fire
-//   * the token registry          — lp_token_save() into this image's real
-//                                   TokenManager, read back through the real
-//                                   logos::host::tokenKeys()/tokenFor()
-//   * the client                  — a real lp_client_create()
-//   * the token push              — a real logos::host::informModuleTokenTo(),
-//                                   which really goes LogosAPIClient ->
-//                                   LogosAPIConsumer::informModuleToken_module
-//                                   -> acquire "<target>__handshake" ->
-//                                   LogosObject::informModuleToken
-//
-// Only the TRANSPORT is substituted, and only by switching the process mode.
-// LogosMockSetup puts the SDK in LogosMode::Mock, where
-// MockTransportConnection::requestObject vends a MockLogosObject for any name
-// and MockLogosObject::informModuleToken returns true. That is what lets the
-// success-path tests run all nine steps of requestModule in-process, with no
-// seam in the impl and no production call site changed — and it is why the
-// tests take ~0 ms rather than timing out on kTokenPushTimeoutMs.
-//
-// The consequence: the mock accepts every push and records nothing, so no test
-// here can assert WHICH module was told or WHICH token it received. Verifying
-// the argument order that capability_module_impl.cpp:127-133 warns about would
-// need a recording endpoint (local mode + a real ModuleProxy), which drags Qt
-// types into this file; the impl is deliberately Qt-free and so is this suite.
-// That gap is unchanged from the pre-migration tests.
+// The grant (lp_grant_host_services), the client (lp_client_create) and the push
+// (logos::host::informModuleTokenTo) are the real ones. Only the TRANSPORT is
+// substituted: LogosMockSetup puts the SDK in LogosMode::Mock, where every push
+// is accepted, so no test here can assert WHICH module was told. Revocations are
+// recorded rather than dialled (CapabilityAuthority::setRevocationPush).
 //
 // ── Security contract (F-001, CWE-290) ───────────────────────────────────────
 //
-// requestModule fails closed. Identity is logos::currentCaller() (the document
-// the host pushed for this dispatch), not fromModuleName. Direct unit tests
-// wrap calls with logos::CallCaller (from logos_test.h) — production RPC
-// glue does that via logos_module_set_call_caller. An unnamed dispatch, an
-// empty target, a
-// never-loaded TARGET, or a policy miss yields an empty result and no token
-// is minted. Spoofing fromModuleName cannot impersonate another loaded module.
-//
-// Under `universal` there is a second, stronger fail-closed precondition the
-// old Qt shape could not express at all: the host-services grant. Reading the
-// token registry now requires "token_registry" and pushing a token requires
-// "token_delivery"; ungranted, requestModule refuses EVERY request. Both are
-// covered below.
-//
-// ── Test isolation ───────────────────────────────────────────────────────────
-//
-// The token store and the host-services grant are both PROCESS-GLOBAL, and
-// lp_grant_host_services REPLACES the grant rather than adding to it, so state
-// leaking between tests would make results order-dependent. CapabilityFixture
-// re-establishes BOTH from scratch on every construction — LogosMockSetup's
-// constructor clears the token store, and the grant is replaced wholesale — so
-// no test can inherit anything from the one before it. Its destructor also
-// clears the grant, so a future test that forgets the fixture fails closed
-// instead of silently borrowing a neighbour's privileges.
+// requestModule fails closed. Identity is logos::currentCaller(), not
+// fromModuleName; tests set it with logos::CallCaller (logos_test.h), as the RPC
+// glue does with logos_module_set_call_caller. An unnamed dispatch, an empty
+// target, a target the runtime never admitted, a policy miss, or a push that
+// cannot be made yields an empty result, and no pair is left on record.
 
 #include <logos_test.h>
 #include <logos_mock.h>      // LogosMockSetup: LogosMode::Mock + token-store reset
 #include <logos_protocol.h>  // lp_grant_host_services, lp_token_save, lp_set_mode, LP_OK
 
+#include "capability_authority.h"
 #include "capability_module_impl.h"
+#include "logos_capability_engine.h"
 
-#include <cstddef>
+#include <mutex>
 #include <regex>
-#include <set>
 #include <string>
+#include <utility>
 #include <vector>
+
+extern "C" const logos_capability_engine_v1* logos_module_capability_engine_v1();
 
 namespace {
 
-// The grant capability_module declares in metadata.json#host_services.
-constexpr const char* kAllHostServices = R"(["token_registry","token_delivery"])";
-// Registry only: enough to verify a caller, NOT enough to deliver the token.
-constexpr const char* kRegistryOnly    = R"(["token_registry"])";
+constexpr const char* kTokenDelivery   = R"(["token_delivery"])";
 constexpr const char* kNoHostServices  = "[]";
 
-// One guard per test; construct it FIRST, before any seeding.
-//
-// Order matters and is enforced by declaration order: m_mock is built before
-// the grant, and LogosMockSetup's constructor calls clearAllTokens(). Seeding
-// before the fixture would therefore be silently wiped.
+const logos_capability_engine_v1& engine()
+{
+    return *logos_module_capability_engine_v1();
+}
+
+std::mutex g_revokedMutex;
+std::vector<CapabilityAuthority::Revocation> g_revoked;
+
+std::vector<CapabilityAuthority::Revocation> revoked()
+{
+    CapabilityAuthority::instance().drainRevocations();
+    std::lock_guard<std::mutex> lock(g_revokedMutex);
+    return g_revoked;
+}
+
+std::string digestOf(const std::string& token)
+{
+    char* digest = lp_token_digest(token.c_str());
+    std::string value = digest ? digest : "";
+    lp_string_free(digest);
+    return value;
+}
+
+// One guard per test. It sets the transport and the grant, admits what the test
+// asks for, and on the way out retires every admission and clears the policy,
+// so no test inherits a neighbour's identities, pairs or privileges.
 class CapabilityFixture {
 public:
-    explicit CapabilityFixture(const char* servicesJson = kAllHostServices)
-        : m_grantRc(lp_grant_host_services(servicesJson)) {}
+    explicit CapabilityFixture(const char* servicesJson = kTokenDelivery)
+        : m_grantRc(lp_grant_host_services(servicesJson))
+    {
+        CapabilityAuthority::instance().setRevocationPush(
+            [](const CapabilityAuthority::Revocation& revocation, const std::string&) {
+                std::lock_guard<std::mutex> lock(g_revokedMutex);
+                g_revoked.push_back(revocation);
+                return LP_OK;
+            });
+    }
 
-    ~CapabilityFixture() { lp_grant_host_services(kNoHostServices); }
+    ~CapabilityFixture()
+    {
+        for (const auto& [name, generation] : m_admitted)
+            engine().retire(name.c_str(), generation);
+        engine().set_restrictions("{}");
+        CapabilityAuthority::instance().drainRevocations();
+        CapabilityAuthority::instance().setRevocationPush({});
+        {
+            std::lock_guard<std::mutex> lock(g_revokedMutex);
+            g_revoked.clear();
+        }
+        lp_grant_host_services(kNoHostServices);
+    }
 
     CapabilityFixture(const CapabilityFixture&) = delete;
     CapabilityFixture& operator=(const CapabilityFixture&) = delete;
 
     int grantRc() const { return m_grantRc; }
 
+    // Admits `name` as the runtime does when it loads a module.
+    void admit(const std::string& name, const char* kind = "module")
+    {
+        unsigned long long generation = 0;
+        char* credential = engine().admit(name.c_str(), kind, &generation);
+        engine().string_free(credential);
+        m_admitted.emplace_back(name, generation);
+    }
+
+    // Retires `name` as the runtime does when it unloads it.
+    void retire(const std::string& name)
+    {
+        for (auto it = m_admitted.begin(); it != m_admitted.end(); ++it) {
+            if (it->first != name) continue;
+            engine().retire(name.c_str(), it->second);
+            m_admitted.erase(it);
+            return;
+        }
+    }
+
 private:
-    LogosMockSetup m_mock;  // must be declared first: it clears the token store
+    LogosMockSetup m_mock;  // declared first: it clears the token store
     int m_grantRc;
+    std::vector<std::pair<std::string, unsigned long long>> m_admitted;
 };
-
-// Seed a module's token so capability_module treats it as a known/loaded
-// module — the test-side stand-in for the host seeding one entry per module it
-// loads. Goes through the real C ABI into the real image token store.
-void seedModule(const std::string& name) {
-    lp_token_save(name.c_str(), ("seed-token-" + name).c_str());
-}
-
-// The trusted core/capability_module auth token. registerRestriction requires
-// it; only core holds it in production. In tests it is whatever seedModule
-// stored for "capability_module".
-const std::string kTrustedToken = "seed-token-capability_module";
-
-// Seed the trusted channel so registerRestriction calls authenticate. Call in
-// any test that registers a restriction.
-void seedTrustedChannel() {
-    seedModule("capability_module");
-}
 
 // UUID without braces: 8-4-4-4-12 lowercase hex digits separated by hyphens.
 bool isUuid(const std::string& s) {
@@ -136,15 +138,20 @@ bool isUuid(const std::string& s) {
     return std::regex_match(s, re);
 }
 
+bool pairOnRecord(const std::string& caller, const std::string& target)
+{
+    return !CapabilityAuthority::instance().pairToken(caller, target).empty();
+}
+
 }  // namespace
 
-// ── Success path: both caller and target are known modules ──────────────────
+// ── Success path: an admitted caller asks for an admitted target ────────────
 
 LOGOS_TEST(requestModule_returns_uuid_format_token) {
     CapabilityFixture fixture;
     LOGOS_ASSERT_EQ(fixture.grantRc(), LP_OK);
-    seedModule("requester_module");
-    seedModule("target_module");
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -155,31 +162,12 @@ LOGOS_TEST(requestModule_returns_uuid_format_token) {
     LOGOS_ASSERT(isUuid(token));
 }
 
-LOGOS_TEST(requestModule_mints_unique_token_per_call) {
+LOGOS_TEST(requestModule_succeeds_for_admitted_caller_and_target) {
+    // The positive control. Without it every refusal below would still pass
+    // against a requestModule that returned "" unconditionally.
     CapabilityFixture fixture;
-    seedModule("requester");
-    seedModule("target");
-
-    CapabilityModuleImpl impl;
-    const auto caller = logos::CallCaller::module("requester");
-
-    std::set<std::string> tokens;
-    for (int i = 0; i < 10; ++i) {
-        tokens.insert(impl.requestModule("requester", "target"));
-    }
-
-    // Also the sharpest liveness detector in the suite: if the push had failed,
-    // all ten would be "" and the set would collapse to size 1.
-    LOGOS_ASSERT_EQ(tokens.size(), std::size_t(10));
-}
-
-LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
-    CapabilityFixture fixture;
-    // Seed both the caller and the target — exercises the tokenFor() path for
-    // the target. The literal value differs from seedModule's to show nothing
-    // reads it.
-    seedModule("requester_module");
-    lp_token_save("target_module", "pre-seeded-token");
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -187,70 +175,12 @@ LOGOS_TEST(requestModule_works_when_target_token_is_pre_seeded) {
     const std::string token = impl.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT(isUuid(token));
-}
-
-// ── F-001 security regression: fail closed on unverified input ──────────────
-
-// Replaces the old `requestModule_returns_empty_when_not_initialized`. The
-// universal shape has no init step and no injected LogosAPI, so there is no
-// "not initialized" state to test; the nearest real fail-closed precondition —
-// and a stronger one — is the host-services grant this module now depends on.
-//
-// Note this asserts the CONTRACT, not one code path: with no grant,
-// tokenKeys() also comes back empty, so the known-caller gate would refuse
-// these inputs even if the explicit ungranted() check were deleted.
-LOGOS_TEST(requestModule_returns_empty_when_host_services_ungranted) {
-    CapabilityFixture fixture(kNoHostServices);
-    LOGOS_ASSERT_EQ(fixture.grantRc(), LP_OK);
-    seedModule("requester");
-    seedModule("target");
-
-    CapabilityModuleImpl impl;
-    const auto caller = logos::CallCaller::module("requester");
-
-    // Both names are known and the pair is unrestricted: the ONLY thing
-    // refusing this request is the missing grant.
-    const std::string token = impl.requestModule("requester", "target");
-
-    LOGOS_ASSERT_TRUE(token.empty());
-}
-
-// The second half of the grant, which nothing else covers: an image allowed to
-// VERIFY a caller but not to DELIVER a token must still refuse, rather than
-// hand back a token the target was never told about.
-LOGOS_TEST(requestModule_returns_empty_when_token_delivery_ungranted) {
-    CapabilityFixture fixture(kRegistryOnly);
-    LOGOS_ASSERT_EQ(fixture.grantRc(), LP_OK);
-    seedModule("requester_module");
-    seedModule("target_module");
-
-    CapabilityModuleImpl impl;
-    const auto caller = logos::CallCaller::module("requester_module");
-
-    // Clears gates 1-5 and mints a token; the push then comes back
-    // LP_ERR_UNSUPPORTED, so the minted token is dropped on the floor.
-    const std::string token = impl.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_TRUE(token.empty());
-}
-
-// Direct construction has no logos_module_set_call_caller push. An unnamed
-// dispatch must refuse even when fromModuleName looks like a loaded module.
-LOGOS_TEST(requestModule_rejects_unnamed_caller) {
-    CapabilityFixture fixture;
-    seedModule("requester_module");
-    seedModule("target_module");
-
-    CapabilityModuleImpl impl;
-
-    const std::string token = impl.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_TRUE(token.empty());
+    LOGOS_ASSERT(pairOnRecord("requester_module", "target_module"));
 }
 
 LOGOS_TEST(requestModule_treats_host_as_core) {
     CapabilityFixture fixture;
-    seedModule("target_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto host = logos::CallCaller::host();
@@ -258,12 +188,13 @@ LOGOS_TEST(requestModule_treats_host_as_core) {
     const std::string token = impl.requestModule("ignored_leftover", "target_module");
 
     LOGOS_ASSERT(isUuid(token));
+    LOGOS_ASSERT(pairOnRecord("core", "target_module"));
 }
 
 LOGOS_TEST(requestModule_ignores_leftover_fromModuleName) {
     CapabilityFixture fixture;
-    seedModule("requester_module");
-    seedModule("target_module");
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -274,9 +205,25 @@ LOGOS_TEST(requestModule_ignores_leftover_fromModuleName) {
     LOGOS_ASSERT(isUuid(token));
 }
 
+// ── F-001 security regression: fail closed on unverified input ──────────────
+
+// Direct construction has no logos_module_set_call_caller push. An unnamed
+// dispatch must refuse even when fromModuleName names an admitted module.
+LOGOS_TEST(requestModule_rejects_unnamed_caller) {
+    CapabilityFixture fixture;
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
+
+    CapabilityModuleImpl impl;
+
+    const std::string token = impl.requestModule("requester_module", "target_module");
+
+    LOGOS_ASSERT_TRUE(token.empty());
+}
+
 LOGOS_TEST(requestModule_rejects_empty_targetModuleName) {
     CapabilityFixture fixture;
-    seedModule("requester_module");
+    fixture.admit("requester_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -288,7 +235,7 @@ LOGOS_TEST(requestModule_rejects_empty_targetModuleName) {
 
 LOGOS_TEST(requestModule_rejects_unknown_target) {
     CapabilityFixture fixture;
-    seedModule("requester_module");
+    fixture.admit("requester_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -298,35 +245,47 @@ LOGOS_TEST(requestModule_rejects_unknown_target) {
     LOGOS_ASSERT_TRUE(token.empty());
 }
 
-LOGOS_TEST(requestModule_succeeds_for_known_caller_and_target) {
-    // The positive control for this section. Without it every assertion above
-    // would still pass against a requestModule that returned "" unconditionally
-    // — or against a harness that had quietly stopped working.
+// The registry is gone: a token in this image's store, which is what the
+// runtime used to push for every module it loaded, no longer makes a target.
+LOGOS_TEST(requestModule_refuses_a_target_the_runtime_never_admitted) {
     CapabilityFixture fixture;
-    seedModule("requester_module");
-    seedModule("target_module");
+    fixture.admit("requester_module");
+    lp_token_save("stored_target", "a-token-core-once-pushed");
+
+    CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
+
+    const std::string token = impl.requestModule("requester_module", "stored_target");
+
+    LOGOS_ASSERT_TRUE(token.empty());
+    LOGOS_ASSERT_FALSE(pairOnRecord("requester_module", "stored_target"));
+}
+
+// No token_delivery: the push is refused at the gate, so the minted token is
+// dropped and the pair it was recorded under is forgotten.
+LOGOS_TEST(requestModule_returns_empty_when_token_delivery_ungranted) {
+    CapabilityFixture fixture(kNoHostServices);
+    LOGOS_ASSERT_EQ(fixture.grantRc(), LP_OK);
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
 
     const std::string token = impl.requestModule("requester_module", "target_module");
 
-    LOGOS_ASSERT_FALSE(token.empty());
-    LOGOS_ASSERT(isUuid(token));
+    LOGOS_ASSERT_TRUE(token.empty());
+    LOGOS_ASSERT_FALSE(pairOnRecord("requester_module", "target_module"));
 }
 
-// The remaining refusal in requestModule: the push reached a real transport and
-// genuinely failed, as opposed to being refused for want of a grant. Mock mode
-// cannot produce it — MockLogosObject accepts everything — so this one test
-// runs in LogosMode::Local with nothing published in the PluginRegistry.
-// LocalTransportConnection::requestObject then misses on both the handshake
-// surface and the business object and returns immediately, so this costs no
-// wall-clock time despite exercising the failure arm.
+// The push reached a real transport and genuinely failed. Mock mode cannot
+// produce it — MockLogosObject accepts everything — so this one test runs in
+// LogosMode::Local with nothing published, which misses immediately.
 LOGOS_TEST(requestModule_returns_empty_when_target_is_unreachable) {
     CapabilityFixture fixture;
-    LOGOS_ASSERT_EQ(lp_set_mode("local"), LP_OK);  // fixture's dtor restores the mode
-    seedModule("requester_module");
-    seedModule("target_module");
+    LOGOS_ASSERT_EQ(lp_set_mode("local"), LP_OK);  // LogosMockSetup restores the mode
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
     const auto caller = logos::CallCaller::module("requester_module");
@@ -334,158 +293,92 @@ LOGOS_TEST(requestModule_returns_empty_when_target_is_unreachable) {
     const std::string token = impl.requestModule("requester_module", "target_module");
 
     LOGOS_ASSERT_TRUE(token.empty());
+    LOGOS_ASSERT_FALSE(pairOnRecord("requester_module", "target_module"));
 }
 
-// ── Access-policy enforcement (registerRestriction + requestModule) ─────────
-//
-// Core parses the access policy and calls registerRestriction(target,
-// allowedCallers) for each restricted target. requestModule then refuses to
-// mint a token when a restricted target's allowed-caller set does not include
-// the requester — the denied caller never gets credentials, so it can never
-// call the target. A target with NO registered restriction stays unrestricted.
+// ── Retirement ──────────────────────────────────────────────────────────────
 
-LOGOS_TEST(registerRestriction_rejects_empty_target) {
+// What others hold for a retired module died with it: nothing is pushed, and a
+// re-admitted target gets a new pair token.
+LOGOS_TEST(retiring_the_target_forgets_the_pair_without_a_push) {
     CapabilityFixture fixture;
-    seedTrustedChannel();
+    fixture.admit("requester_module");
+    fixture.admit("target_module");
 
     CapabilityModuleImpl impl;
+    const auto caller = logos::CallCaller::module("requester_module");
+    const std::string first = impl.requestModule("", "target_module");
+    LOGOS_ASSERT(isUuid(first));
 
-    // Passes the trusted-token gate, then is refused by the empty-target gate —
-    // which pins the gate ORDER: trust is checked before argument validity.
-    LOGOS_ASSERT_FALSE(impl.registerRestriction(kTrustedToken, "", {"caller"}));
+    fixture.retire("target_module");
+    LOGOS_ASSERT_FALSE(pairOnRecord("requester_module", "target_module"));
+    LOGOS_ASSERT(revoked().empty());
+
+    fixture.admit("target_module");
+    const std::string second = impl.requestModule("", "target_module");
+    LOGOS_ASSERT(isUuid(second));
+    LOGOS_ASSERT_NE(second, first);
 }
 
-LOGOS_TEST(registerRestriction_rejects_untrusted_caller_token) {
-    // A loaded module can reach this method (the generic authorization that
-    // fronts it accepts any issued token), so the explicit trusted-token gate
-    // is the real defense: a peer presenting its own token must NOT be able to
-    // register a restriction.
-    CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("malicious_module");
-    seedModule("package_manager");
-
-    CapabilityModuleImpl impl;
-
-    // malicious_module tries to grant itself access using its OWN token.
-    const bool ok = impl.registerRestriction(
-        "seed-token-malicious_module", "package_manager", {"malicious_module"});
-    LOGOS_ASSERT_FALSE(ok);
-
-    // And an empty token is rejected too.
-    LOGOS_ASSERT_FALSE(impl.registerRestriction(
-        "", "package_manager", {"malicious_module"}));
-}
-
-LOGOS_TEST(requestModule_allows_listed_caller_for_restricted_target) {
-    CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("package_manager_ui");
-    seedModule("package_manager");
-
-    CapabilityModuleImpl impl;
-
-    LOGOS_ASSERT_TRUE(impl.registerRestriction(
-        kTrustedToken, "package_manager", {"package_manager_ui"}));
-
-    const auto caller = logos::CallCaller::module("package_manager_ui");
-    const std::string token = impl.requestModule("package_manager_ui", "package_manager");
-
-    LOGOS_ASSERT_FALSE(token.empty());
-    LOGOS_ASSERT(isUuid(token));
-}
-
-LOGOS_TEST(requestModule_denies_unlisted_caller_for_restricted_target) {
-    CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("some_other_module");
-    seedModule("package_manager");
-
-    CapabilityModuleImpl impl;
-
-    impl.registerRestriction(kTrustedToken, "package_manager", {"package_manager_ui"});
-
-    // some_other_module is a named, loaded module but is not in
-    // package_manager's allowed-caller set — must be denied.
-    const auto caller = logos::CallCaller::module("some_other_module");
-    const std::string token = impl.requestModule("some_other_module", "package_manager");
-
-    LOGOS_ASSERT_TRUE(token.empty());
-}
+// ── Access policy, from the runtime through set_restrictions ────────────────
 
 LOGOS_TEST(requestModule_allows_any_caller_for_unrestricted_target) {
-    // Pins the deliberate fail-OPEN policy decision (see the
-    // TODO(access-policy) in capability_module_impl.cpp). Nothing else does:
-    // flipping to deny-by-default must turn THIS test red.
+    // Pins the deliberate fail-OPEN policy decision (see the TODO(access-policy)
+    // in capability_module_impl.cpp). Flipping to deny-by-default must turn
+    // THIS test red.
     CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("some_module");
-    seedModule("restricted_target");
-    seedModule("open_target");
+    fixture.admit("some_module");
+    fixture.admit("restricted_target");
+    fixture.admit("open_target");
+    LOGOS_ASSERT_EQ(engine().set_restrictions(R"({"restricted_target":["allowed_caller"]})"), 0);
 
     CapabilityModuleImpl impl;
-
-    // Restrict only restricted_target; open_target has no restriction.
-    impl.registerRestriction(kTrustedToken, "restricted_target", {"allowed_caller"});
-
     const auto caller = logos::CallCaller::module("some_module");
-    const std::string token = impl.requestModule("some_module", "open_target");
 
-    LOGOS_ASSERT_FALSE(token.empty());
-    LOGOS_ASSERT(isUuid(token));
+    LOGOS_ASSERT(isUuid(impl.requestModule("some_module", "open_target")));
+    LOGOS_ASSERT_TRUE(impl.requestModule("some_module", "restricted_target").empty());
 }
 
-LOGOS_TEST(requestModule_allows_all_when_no_restriction_registered) {
-    // Back-compat: with no policy pushed, every known caller/target pair works.
+// A new policy replaces the old one whole, and a pair it now denies is revoked
+// at the target rather than left working until its next request.
+LOGOS_TEST(a_new_policy_revokes_the_pair_it_denies) {
     CapabilityFixture fixture;
-    seedModule("requester_module");
-    seedModule("target_module");
+    fixture.admit("old_caller");
+    fixture.admit("new_caller");
+    fixture.admit("target_module");
+    LOGOS_ASSERT_EQ(engine().set_restrictions(R"({"target_module":["old_caller"]})"), 0);
 
     CapabilityModuleImpl impl;
-    const auto caller = logos::CallCaller::module("requester_module");
-
-    const std::string token = impl.requestModule("requester_module", "target_module");
-
-    LOGOS_ASSERT_FALSE(token.empty());
-}
-
-LOGOS_TEST(registerRestriction_overwrites_previous_for_same_target) {
-    CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("old_caller");
-    seedModule("new_caller");
-    seedModule("target_module");
-
-    CapabilityModuleImpl impl;
-
-    impl.registerRestriction(kTrustedToken, "target_module", {"old_caller"});
-    // Re-register (as core does each boot) with a different allowed set.
-    impl.registerRestriction(kTrustedToken, "target_module", {"new_caller"});
-
-    // old_caller is no longer allowed; new_caller is. The second assertion is
-    // what distinguishes "overwritten" from "registerRestriction broke the
-    // target for everyone".
+    std::string granted;
     {
         const auto oldCaller = logos::CallCaller::module("old_caller");
-        LOGOS_ASSERT_TRUE(impl.requestModule("old_caller", "target_module").empty());
+        granted = impl.requestModule("", "target_module");
+        LOGOS_ASSERT(isUuid(granted));
     }
+
+    LOGOS_ASSERT_EQ(engine().set_restrictions(R"({"target_module":["new_caller"]})"), 0);
+    const auto revocations = revoked();
+    LOGOS_ASSERT_EQ(revocations.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(revocations[0].target, std::string("target_module"));
+    LOGOS_ASSERT_EQ(revocations[0].caller, std::string("old_caller"));
+    LOGOS_ASSERT_EQ(revocations[0].digest, digestOf(granted));
+
     {
-        const auto newCaller = logos::CallCaller::module("new_caller");
-        LOGOS_ASSERT_FALSE(impl.requestModule("new_caller", "target_module").empty());
+        const auto oldCaller = logos::CallCaller::module("old_caller");
+        LOGOS_ASSERT_TRUE(impl.requestModule("", "target_module").empty());
     }
+    const auto newCaller = logos::CallCaller::module("new_caller");
+    LOGOS_ASSERT(isUuid(impl.requestModule("", "target_module")));
 }
 
 LOGOS_TEST(requestModule_denies_spoofed_fromModuleName) {
     CapabilityFixture fixture;
-    seedTrustedChannel();
-    seedModule("package_manager_ui");
-    seedModule("package_manager");
-    seedModule("malicious_module");
+    fixture.admit("package_manager_ui");
+    fixture.admit("package_manager");
+    fixture.admit("malicious_module");
+    LOGOS_ASSERT_EQ(engine().set_restrictions(R"({"package_manager":["package_manager_ui"]})"), 0);
 
     CapabilityModuleImpl impl;
-
-    LOGOS_ASSERT_TRUE(impl.registerRestriction(
-        kTrustedToken, "package_manager", {"package_manager_ui"}));
 
     // Token-bound caller is malicious_module; leftover ABI claims the UI.
     const auto caller = logos::CallCaller::module("malicious_module");

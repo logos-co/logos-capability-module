@@ -23,6 +23,9 @@ public:
     static CapabilityAuthority& instance();
     ~CapabilityAuthority();
 
+    // A fresh random token: every credential and pair token comes from here.
+    static std::string mintToken();
+
     // A fresh credential for `name` ("module", "shell" or "presentation"); empty
     // when refused. A re-admission retires the previous one.
     std::string admit(const std::string& name, const std::string& kind, uint64_t& generation);

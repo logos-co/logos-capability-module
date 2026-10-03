@@ -20,13 +20,6 @@ namespace {
 constexpr int kPushTimeoutMs = 3000;
 constexpr int kRevocationAttempts = 3;
 
-std::string mint()
-{
-    static std::mutex mutex;
-    static boost::uuids::random_generator generator;
-    std::lock_guard<std::mutex> lock(mutex);
-    return boost::uuids::to_string(generator());
-}
 
 std::string digestOf(const std::string& token)
 {
@@ -50,6 +43,16 @@ int pushToTarget(const CapabilityAuthority::Revocation& revocation, const std::s
 }
 
 } // namespace
+
+// Boost seeds from the platform CSPRNG; std::random_device may be deterministic
+// (it was on MinGW), and the token IS the secret.
+std::string CapabilityAuthority::mintToken()
+{
+    static std::mutex mutex;
+    static boost::uuids::random_generator generator;
+    std::lock_guard<std::mutex> lock(mutex);
+    return boost::uuids::to_string(generator());
+}
 
 CapabilityAuthority& CapabilityAuthority::instance()
 {
@@ -133,7 +136,7 @@ std::string CapabilityAuthority::admit(const std::string& name, const std::strin
 {
     if (name.empty() || (kind != "module" && kind != "shell" && kind != "presentation"))
         return {};
-    std::string credential = mint();
+    std::string credential = CapabilityAuthority::mintToken();
     uint64_t previous = 0;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -312,7 +315,7 @@ char* engineGrantOperatorPair(const char* op, const char* target)
         return copy(existing);
     const std::string auth = authority.credentialFor(target);
     if (auth.empty() || authority.isConsumerOnly(target)) return nullptr;
-    const std::string token = mint();
+    const std::string token = CapabilityAuthority::mintToken();
     authority.recordPair(key, target, token);
     lp_client* client = lp_client_create(target, "capability_module", nullptr, nullptr);
     const int status = client ? lp_inform_module_token_to(client, auth.c_str(), target,
