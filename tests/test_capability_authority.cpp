@@ -80,6 +80,8 @@ struct Retiring {
     {
         for (const auto& a : admitted) engine().retire(a.name.c_str(), a.generation);
         engine().set_restrictions("{}");
+        engine().set_caller_scopes("{}");
+        engine().set_remote_policy("{}");
         CapabilityAuthority::instance().drainRevocations();
         std::lock_guard<std::mutex> lock(g_pushedMutex);
         g_pushed.clear();
@@ -236,4 +238,88 @@ LOGOS_TEST(a_stopped_authority_pushes_no_revocation) {
     LOGOS_ASSERT(authority.retire("stop_caller", callerGeneration));
     authority.drainRevocations();
     LOGOS_ASSERT_EQ(pushes.load(), 0);
+}
+
+// ── peering ──────────────────────────────────────────────────────────────────
+
+LOGOS_TEST(the_remote_policy_decides_remote_access) {
+    Retiring store;
+    const auto decide = [](const char* peer, const char* consumer, const char* target) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_access(peer, consumer, target)));
+    };
+    LOGOS_ASSERT(LOGOS_CAPABILITY_ENGINE_HAS(&engine(), set_caller_scopes));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(
+        R"({"peer-a/wallet":["auth_wallet"],"peer-b/*":["*"]})"), 0);
+    LOGOS_ASSERT(decide("peer-a", "wallet", "auth_wallet").value("allow", false));
+    LOGOS_ASSERT_FALSE(decide("peer-a", "wallet", "auth_wallet").value("decision", "").empty());
+    // Unlisted consumer, target or runtime: denied.
+    LOGOS_ASSERT_FALSE(decide("peer-a", "miner", "auth_wallet").value("allow", true));
+    LOGOS_ASSERT_FALSE(decide("peer-a", "wallet", "other").value("allow", true));
+    LOGOS_ASSERT_FALSE(decide("peer-c", "wallet", "auth_wallet").value("allow", true));
+    // "*" as the consumer and as the target.
+    LOGOS_ASSERT(decide("peer-b", "anyone", "anything").value("allow", false));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"no-runtime":["x"]})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/wallet":"auth_wallet"})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy("{}"), 0);
+    LOGOS_ASSERT_FALSE(decide("peer-b", "anyone", "anything").value("allow", true));
+}
+
+LOGOS_TEST(the_remote_policy_grants_methods_and_an_exact_key_wins) {
+    Retiring store;
+    const auto call = [](const char* peer, const char* consumer, const char* target, const char* method) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_call(peer, consumer, target, method)))
+            .value("allow", false);
+    };
+    const auto reach = [](const char* peer, const char* consumer, const char* target) {
+        return nlohmann::json::parse(take(engine().evaluate_remote_access(peer, consumer, target)))
+            .value("allow", false);
+    };
+    LOGOS_ASSERT(LOGOS_CAPABILITY_ENGINE_HAS(&engine(), evaluate_remote_call));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({
+        "peer-a/ctl": {"core_service": ["getStatus"], "auth_wallet": "*", "auth_none": []},
+        "peer-a/*": ["core_service"]})"), 0);
+    LOGOS_ASSERT(call("peer-a", "ctl", "core_service", "getStatus"));
+    // The exact key wins: the wildcard's every-method grant does not reach ctl.
+    LOGOS_ASSERT_FALSE(call("peer-a", "ctl", "core_service", "loadModule"));
+    LOGOS_ASSERT(call("peer-a", "other", "core_service", "loadModule"));
+    LOGOS_ASSERT(call("peer-a", "ctl", "auth_wallet", "anything"));
+    // [] denies, as does a target the rule leaves out.
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "auth_none"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "unlisted"));
+    LOGOS_ASSERT(reach("peer-a", "ctl", "core_service"));
+    // "*" covers every export, never core_service.
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/*": ["*"], "peer-a/ctl": {"*": "*"}})"), 0);
+    LOGOS_ASSERT(call("peer-a", "ctl", "auth_wallet", "anything"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "ctl", "core_service"));
+    LOGOS_ASSERT_FALSE(reach("peer-a", "other", "core_service"));
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":{"core_service":"all"}})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":{"core_service":[1]}})"), -1);
+    LOGOS_ASSERT_EQ(engine().set_remote_policy(R"({"peer-a/ctl":5})"), -1);
+}
+
+LOGOS_TEST(a_scoped_caller_pairs_only_within_its_scope) {
+    LogosMockSetup mock;
+    lp_grant_host_services(R"(["token_delivery"])");
+    Retiring store;
+    store.add("auth_facade");
+    store.add("auth_peering");
+    store.add("auth_other");
+    CapabilityModuleImpl impl;
+    std::string held;
+    {
+        const auto caller = logos::CallCaller::module("auth_facade");
+        held = impl.requestModule("", "auth_other");
+        LOGOS_ASSERT_FALSE(held.empty());
+    }
+    LOGOS_ASSERT_EQ(engine().set_caller_scopes(R"({"auth_facade":["auth_peering"]})"), 0);
+    // The pair it held outside its new scope is revoked at once.
+    const auto revocations = pushed();
+    LOGOS_ASSERT_EQ(revocations.size(), static_cast<size_t>(1));
+    LOGOS_ASSERT_EQ(revocations[0].target, std::string("auth_other"));
+    LOGOS_ASSERT_EQ(revocations[0].digest, digestOf(held));
+    const auto caller = logos::CallCaller::module("auth_facade");
+    LOGOS_ASSERT(impl.requestModule("", "auth_other").empty());
+    LOGOS_ASSERT_FALSE(impl.requestModule("", "auth_peering").empty());
+    LOGOS_ASSERT_EQ(engine().set_caller_scopes(R"({"auth_facade":"auth_peering"})"), -1);
+    lp_grant_host_services("[]");
 }

@@ -101,6 +101,11 @@ std::string CapabilityModuleImpl::requestModule(const std::string& fromModuleNam
         warn("[capability_module] access policy denies '%s' -> '%s'\n", callerName, moduleName);
         return {};
     }
+    // In every mode: an import's facade, for one, may call only peering_module.
+    if (!authority.withinScope(callerName, moduleName)) {
+        warn("[capability_module] '%s' may not call '%s': outside its scope\n", callerName, moduleName);
+        return {};
+    }
 
     // One token per pair while both are on record: a second client stack of the
     // same identity gets it again instead of overwriting the first's. Retiring
