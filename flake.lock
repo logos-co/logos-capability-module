@@ -81,11 +81,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789671700,
-        "narHash": "sha256-OXMurChZK6ZmWm+MS9FsA9C4tNvuLi1naK333/E3+X0=",
+        "lastModified": 1790070347,
+        "narHash": "sha256-58ZfV4SeZaFenjgzlDoBVy4aH3qcMFAgcUkIKUKs2W0=",
         "owner": "logos-co",
         "repo": "logos-design-system",
-        "rev": "e43a4817b0febc508ce1c044dd424c08598036a8",
+        "rev": "88330d04968954be956311b0be429048a41da2ea",
         "type": "github"
       },
       "original": {
@@ -412,15 +412,16 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1789700422,
-        "narHash": "sha256-OnO5xxnwVpFBTqbOWbUpjECkbAD7d+U82wdbJxWAqdg=",
+        "lastModified": 1790285356,
+        "narHash": "sha256-Sm15Mz52dv5oVVjX3JNps4NGTDam97O2FtYCIidjCAg=",
         "owner": "logos-co",
         "repo": "logos-module-builder",
-        "rev": "de169fd45d7bdf6e28ce1f151b4c34880523ace9",
+        "rev": "411c86d94daffbcdde28f93306aec2a8d9472351",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
+        "ref": "feat/windows-unit-tests",
         "repo": "logos-module-builder",
         "type": "github"
       }
@@ -1329,11 +1330,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789513908,
-        "narHash": "sha256-mB4LKBtJJPqakXCnx4f4jdMqhzX1SdfPAzVxLb++sEQ=",
+        "lastModified": 1790105823,
+        "narHash": "sha256-6tygBoLhORTpBlEmbY3sgxW9FAhlRvsp7CENpvqPsWQ=",
         "owner": "logos-co",
         "repo": "logos-rust-sdk",
-        "rev": "b572e8172ca512b41c102d555f00258b859629c0",
+        "rev": "569ecc5e39edb4a5966224ee465f1cc7f5344844",
         "type": "github"
       },
       "original": {
@@ -1414,11 +1415,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789680170,
-        "narHash": "sha256-HI6m/iC+YM9NIGlSMZ6dEqLDnzHnSHN7aiu6E0KnVjc=",
+        "lastModified": 1790028132,
+        "narHash": "sha256-kBkz68YXWj2gDdwtYRgZ0/7smTURYzrJlsp/+stlqcA=",
         "owner": "logos-co",
         "repo": "logos-view-module-runtime",
-        "rev": "da1069ae9dd58fbe6cdae783d37210cbd5610fe7",
+        "rev": "42d9140811088f6ac0fcc3ccfc26d647afef1c35",
         "type": "github"
       },
       "original": {
