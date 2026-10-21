@@ -4,13 +4,13 @@ release: ""
 
 intro: |
   `logos-capability-module` is the `core` module the host loads first: it is the
-  permission broker every other module is routed through. When `logoscore` loads
+  permission broker every other module is routed through. When `logosctl` loads
   a module, and when one module calls another over IPC, the request passes the
   capability layer this module implements. So the sharpest test of a change here
   is not to call the capability module directly — it is to put it underneath a
   **real cross-module conversation** and confirm that conversation still works.
 
-  That is exactly what this doc-test does. It builds the `logoscore` runtime with
+  That is exactly what this doc-test does. It builds the `logosctl` runtime with
   **this capability-module commit** wired in as the broker, then runs two ordinary
   modules on top of it — one calling the other across the process boundary —
   through every composition path the SDK offers:
@@ -23,24 +23,24 @@ intro: |
      subscribing to its event.
   3. Build both modules' `.lgx` packages (against the latest published SDK — they
      are the payload, not the unit under test).
-  4. Build `logoscore` **with `logos-capability-module` pinned to the commit under
-     test**, install both modules, load them together, and call the
+  4. Build `logosctl` **with `logos-capability-module` pinned to the commit under
+     test**, install both modules into its session, load them together, and call the
      orchestrator's methods — each of which loads, authorises, and calls across
      the capability layer this commit provides.
 
-  Because every `load-module` and every cross-module `call` is mediated by the
+  Because every `module load` and every cross-module `call` is mediated by the
   capability module built from the commit under test, a green run is real
   evidence that this change keeps module loading and inter-module composition —
   the things the capability layer gates — working end to end.
 
-what_you_build: "Two modules — a `greeter_module` callee and an `orchestrator_module` caller — run together in a `logoscore` whose capability broker is built from this commit, with the caller driving the callee over IPC."
+what_you_build: "Two modules — a `greeter_module` callee and an `orchestrator_module` caller — run together in a `logosctl` daemon whose capability broker is built from this commit, with the caller driving the callee over IPC."
 
 what_you_learn:
   - How the capability module sits under every module load and every cross-module call
   - How one module declares another as a dependency (`metadata.json` + `flake.nix` input)
   - How the SDK generates a typed `modules().<dep>` wrapper with sync, async, and event APIs
-  - How to build `logoscore` with a specific `logos-capability-module` commit pinned across its closure
-  - How to load two modules in `logoscore` and chain calls so the caller drives the callee through the capability layer
+  - How to build `logosctl` with a specific `logos-capability-module` commit pinned across its closure
+  - How to load two modules in `logosctl` and chain calls so the caller drives the callee through the capability layer
 
 prerequisites:
   - |
@@ -493,18 +493,18 @@ sections:
   - title: "Build the runtime with this capability module and install both modules"
     step: true
     text: |
-      Build `logoscore` with `logos-capability-module` **pinned to the commit
-      under test**, then build `lgpm` and install both modules into a `./modules`
-      directory the daemon can scan.
+      Build `logosctl` with `logos-capability-module` **pinned to the commit
+      under test**, start its daemon, and install both modules into the daemon's
+      session.
 
-      `logos-capability-module` appears twice in the `logoscore` closure — as a
+      `logos-capability-module` appears twice in the `logosctl` closure — as a
       direct input of `logos-logoscore-cli` (the bundled `capability_module`
       plugin the daemon loads at boot) and inside `logos-liblogos` (the runtime
       that hosts it). Overriding both pins the whole capability layer to this
       commit.
 
       These are deliberately the only overrides. The caller-aware host stack is
-      merged and logoscore resolves it through its normal locks; a temporary
+      merged and logosctl resolves it through its normal locks; a temporary
       liblogos/SDK override would mask the cross-package compatibility this
       doc-test is meant to exercise.
 
@@ -513,87 +513,81 @@ sections:
       > checkout's `HEAD` (see `run.sh`); in CI it is the commit being tested.
       > With no pin it falls back to latest `master`.
     steps:
-      - title: "Build logoscore with this capability module"
+      - title: "Build logosctl with this capability module"
         run: |
-          nix build 'github:logos-co/logos-logoscore-cli' \
+          nix build 'github:logos-co/logos-logoscore-cli#ctl' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module{release}' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module{release}' \
             --out-link ./logos
         code_block: |
-          nix build 'github:logos-co/logos-logoscore-cli' \
+          nix build 'github:logos-co/logos-logoscore-cli#ctl' \
             --override-input logos-capability-module 'github:logos-co/logos-capability-module' \
             --override-input logos-liblogos/logos-capability-module 'github:logos-co/logos-capability-module' \
             --out-link ./logos
-        check_file: "logos/bin/logoscore"
+        check_file: "logos/bin/logosctl"
         post_text: |
-          The build produces `logos/bin/logoscore` plus bundled runtime libraries
+          The build produces `logos/bin/logosctl` plus bundled runtime libraries
           and a `logos/modules/` directory containing the `capability_module` built
           from the commit under test — the broker every load and call goes through.
 
-      - title: "Build lgpm"
-        run: "nix build 'github:logos-co/logos-package-manager#cli' -o lgpm"
-        check_file: "lgpm/bin/lgpm"
-
-      - title: "Seed the modules directory with this capability module"
+      - title: "Start the daemon"
         text: |
-          Loading any module goes through the host's capability layer, so the
-          modules directory needs the `capability_module` that ships with the
-          `logoscore` we just built — i.e. the one built from this commit. Copy it
-          across first.
-        run: |
-          mkdir -p modules
-          cp -RL ./logos/modules/. ./modules/
-        check_file: "modules/capability_module/manifest.json"
+          The session directory, `./session`, holds the daemon's config, its
+          installed modules and their data. `--detach` returns once the daemon
+          accepts commands. The daemon loads the `capability_module` bundled with
+          the `logosctl` we just built — i.e. the one built from this commit — at
+          boot; loading the two payload modules and every cross-module call below
+          is then mediated by it.
+        # The bundled package downloader starts a storage node in $HOME; keep it
+        # out of the real one.
+        run: "mkdir -p home && HOME=\"$PWD/home\" ./logos/bin/logosctl --config-dir ./session daemon start --detach"
+        code_block: "logosctl daemon start --detach"
+        expect_contains:
+          - "Daemon started"
 
       - title: "Install the greeter"
-        run: "./lgpm/bin/lgpm --modules-dir ./modules --allow-unsigned install --file greeter-lgx/*.lgx"
+        run: "./logos/bin/logosctl --config-dir ./session install greeter-lgx/*.lgx -y"
+        code_block: "logosctl install greeter-lgx/*.lgx -y"
         expect_contains:
-          - "Installed to:"
+          - '"installed":["greeter_module"]'
 
       - title: "Install the orchestrator"
-        run: "./lgpm/bin/lgpm --modules-dir ./modules --allow-unsigned install --file orchestrator-lgx/*.lgx"
+        run: "./logos/bin/logosctl --config-dir ./session install orchestrator-lgx/*.lgx -y"
+        code_block: "logosctl install orchestrator-lgx/*.lgx -y"
         expect_contains:
-          - "Installed to:"
+          - '"installed":["orchestrator_module"]'
 
       - title: "Confirm all three modules are present"
-        run: "./lgpm/bin/lgpm --modules-dir ./modules list"
+        run: "./logos/bin/logosctl --config-dir ./session module ls"
+        code_block: "logosctl module ls"
         expect_contains:
           - "capability_module"
           - "greeter_module"
           - "orchestrator_module"
-        check_file: "modules/orchestrator_module/manifest.json"
+        check_file: "session/modules/orchestrator_module/manifest.json"
 
   - title: "Load both modules and drive the caller"
     step: true
     text: |
-      Start `logoscore` in daemon mode (`-D`) — it keeps each module's process
-      alive between `call` commands, so an event subscription registered by one
-      call is still active when a later call triggers it, and an async reply
-      lands before the call that reads it. The daemon auto-loads the
-      `capability_module` (this commit) at boot; loading the two payload modules
-      and every cross-module call below is then mediated by it.
+      The daemon keeps each module's process alive between `call` commands, so an
+      event subscription registered by one call is still active when a later call
+      triggers it, and an async reply lands before the call that reads it.
     steps:
-      - title: "Start the daemon"
-        run: "sh -c './logos/bin/logoscore -D -m ./modules > logs.txt 2>&1 &'"
-        code_block: "logoscore -D -m ./modules > logs.txt &"
-
-      - run: "sleep 3"
-
       - title: "Load the greeter (the dependency first)"
-        run: "./logos/bin/logoscore load-module greeter_module"
-        code_block: "logoscore load-module greeter_module"
+        run: "./logos/bin/logosctl --config-dir ./session module load greeter_module"
+        code_block: "logosctl module load greeter_module"
         expect_contains:
           - "greeter_module"
 
       - title: "Load the orchestrator"
-        run: "./logos/bin/logoscore load-module orchestrator_module"
-        code_block: "logoscore load-module orchestrator_module"
+        run: "./logos/bin/logosctl --config-dir ./session module load orchestrator_module"
+        code_block: "logosctl module load orchestrator_module"
         expect_contains:
           - "orchestrator_module"
 
       - title: "Confirm both report loaded"
-        run: "./logos/bin/logoscore status"
-        code_block: "logoscore status"
+        run: "./logos/bin/logosctl --config-dir ./session daemon status"
+        code_block: "logosctl daemon status"
         expect_contains:
           - "greeter_module"
           - "orchestrator_module"
@@ -604,8 +598,8 @@ sections:
           `greetThrough(name)` forwards straight to `greeter_module.greet(name)`
           and returns the result — one typed sync call across the process
           boundary, authorised by the capability layer:
-        run: "./logos/bin/logoscore call orchestrator_module greetThrough World"
-        code_block: "logoscore call orchestrator_module greetThrough World"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module greetThrough World"
+        code_block: "logosctl call orchestrator_module greetThrough World"
         expect_contains:
           - '"result":"Hello, World!"'
 
@@ -615,8 +609,8 @@ sections:
           `addInts`, and `greetCount` — and returns them as one map. The greeter
           has now been greeted twice (once above, once here), so `greetCount` is
           `2`:
-        run: "./logos/bin/logoscore call orchestrator_module greetReport Logos 3 5"
-        code_block: "logoscore call orchestrator_module greetReport Logos 3 5"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module greetReport Logos 3 5"
+        code_block: "logosctl call orchestrator_module greetReport Logos 3 5"
         expect_contains:
           - '"greeting":"Hello, Logos!"'
           - '"sum":8'
@@ -627,16 +621,16 @@ sections:
           `startAsyncGreet(name)` fires `greeter_module.greetAsync(name)` and
           returns `"queued"` immediately. The reply arrives on the daemon's event
           loop; the next call, `asyncGreeting()`, reads what the callback stashed:
-        run: "./logos/bin/logoscore call orchestrator_module startAsyncGreet Async"
-        code_block: "logoscore call orchestrator_module startAsyncGreet Async"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module startAsyncGreet Async"
+        code_block: "logosctl call orchestrator_module startAsyncGreet Async"
         expect_contains:
           - '"result":"queued"'
 
       - run: "sleep 1"
 
       - title: "Read the async reply"
-        run: "./logos/bin/logoscore call orchestrator_module asyncGreeting"
-        code_block: "logoscore call orchestrator_module asyncGreeting"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module asyncGreeting"
+        code_block: "logosctl call orchestrator_module asyncGreeting"
         expect_contains:
           - '"result":"Hello, Async!"'
 
@@ -647,41 +641,39 @@ sections:
           greeter emit it, and `lastGreetedEvent()` reads what the subscription
           captured. Because the daemon keeps both modules loaded, the event fires
           between the calls:
-        run: "./logos/bin/logoscore call orchestrator_module subscribeGreeted"
-        code_block: "logoscore call orchestrator_module subscribeGreeted"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module subscribeGreeted"
+        code_block: "logosctl call orchestrator_module subscribeGreeted"
         expect_contains:
           - '"result":"ok"'
 
       - title: "Trigger the event from the greeter"
-        run: "./logos/bin/logoscore call greeter_module greetNotify Events"
-        code_block: "logoscore call greeter_module greetNotify Events"
+        run: "./logos/bin/logosctl --config-dir ./session call greeter_module greetNotify Events"
+        code_block: "logosctl call greeter_module greetNotify Events"
 
       - run: "sleep 1"
 
       - title: "Read the captured event payload"
-        run: "./logos/bin/logoscore call orchestrator_module lastGreetedEvent"
-        code_block: "logoscore call orchestrator_module lastGreetedEvent"
+        run: "./logos/bin/logosctl --config-dir ./session call orchestrator_module lastGreetedEvent"
+        code_block: "logosctl call orchestrator_module lastGreetedEvent"
         expect_contains:
           - '"result":"Hello, Events!"'
 
       - title: "Dump the daemon log"
-        run: "cat logs.txt || true"
+        run: "cat session/logs/daemon.log || true"
 
       - title: "Stop the daemon"
-        run: "./logos/bin/logoscore stop"
-        code_block: "logoscore stop"
-
-      - run: "sleep 2"
+        run: "./logos/bin/logosctl --config-dir ./session daemon stop"
+        code_block: "logosctl daemon stop"
 
       - title: "Confirm the daemon has stopped"
-        run: "./logos/bin/logoscore status || true"
-        code_block: "logoscore status"
+        run: "./logos/bin/logosctl --config-dir ./session daemon status || true"
+        code_block: "logosctl daemon status"
         expect_contains:
           - '"status":"not_running"'
 
   - title: "Recap"
     text: |
-      | Composition path | In the orchestrator | Driven via `logoscore` |
+      | Composition path | In the orchestrator | Driven via `logosctl` |
       | ---------------- | ------------------- | ---------------------- |
       | Typed **sync** call | `greetThrough()` → `greeter.greet(...)` | `"Hello, World!"` |
       | Composed sync calls | `greetReport()` → `greet` + `addInts` + `greetCount` | one map of three results |

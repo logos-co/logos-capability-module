@@ -3,7 +3,7 @@ name: capability-module Doc-Tests
 # Runs the executable capability-module doc-test
 # (doctests/capability-module-composition.test.yaml) end-to-end via the shared
 # doctest CLI: builds two payload modules (a callee and a caller that depends on
-# it), builds the logoscore runtime with THIS commit of logos-capability-module
+# it), builds the logosctl runtime with THIS commit of logos-capability-module
 # wired in as the permission broker, installs both modules, loads them, and drives
 # the caller so it calls the callee over IPC — every load and every cross-module
 # call passing through the capability layer under test.
@@ -65,7 +65,7 @@ jobs:
 
       # Resolve the commit under test. For pull requests this is the PR's head
       # commit (not the synthetic merge commit); for pushes it's the pushed
-      # commit. Passed to --release-for below so the doc-test builds the logoscore
+      # commit. Passed to --release-for below so the doc-test builds the logosctl
       # runtime against THIS commit of logos-capability-module instead of the
       # latest published flake.
       #
@@ -93,7 +93,7 @@ jobs:
       # --release-for pins the {release} placeholder for logos-capability-module
       # to the commit under test, so every
       # `github:logos-co/logos-capability-module{release}` override URL in the
-      # spec becomes `.../<sha>` — the capability broker baked into logoscore (both
+      # spec becomes `.../<sha>` — the capability broker baked into logosctl (both
       # the bundled plugin and the copy inside logos-liblogos) is rebuilt against
       # this PR/push. Every other repo URL still resolves to latest.
       - name: Run capability-module composition doc-test
@@ -227,7 +227,7 @@ jobs:
             const body =
               `${marker}\n` +
               `### 📊 capability-module doc-test report\n\n` +
-              `Two modules run together in a logoscore whose permission broker is ` +
+              `Two modules run together in a logosctl daemon whose permission broker is ` +
               `built from this commit, with the caller driving the callee over IPC ` +
               `— rendered alongside the commands actually run and their output ` +
               `(updated each run, commit \`${context.sha.slice(0,7)}\`):\n\n` +
