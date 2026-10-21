@@ -5,7 +5,7 @@
 # Spec run here:
 #   - capability-module-composition.test.yaml  two payload modules (a callee and
 #                                              a caller that depends on it) run in
-#                                              a logoscore whose capability broker
+#                                              a logosctl daemon whose capability broker
 #                                              is built from THIS commit, with one
 #                                              module calling the other over IPC
 #
@@ -34,7 +34,7 @@ SPECS=(
 # published flake. The spec overrides `logos-capability-module` (in both the
 # logos-logoscore-cli root and its logos-liblogos sub-input) with
 # `github:logos-co/logos-capability-module{release}`. The host stack resolves
-# through logoscore's ordinary lock: that is the cross-package compatibility
+# through logosctl's ordinary lock: that is the cross-package compatibility
 # this doc-test is intended to cover. The pin below makes {release} expand to
 # $COMMIT — so the capability layer the runtime loads is built from exactly
 # what's checked out here. Override by exporting COMMIT (e.g. a tag),
